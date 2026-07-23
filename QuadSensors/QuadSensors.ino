@@ -91,13 +91,12 @@ int   hipPos[NUM_HIPS];
 // ============================================================
 // KNEE CONFIG — FL only for now
 // Same servo model as the hips (500-2500us, 270 degrees), so the
-// same pulse mapping applies. No mechanical limits are known yet --
-// jog cautiously in small steps and narrow KNEE_FL_MIN/MAX once
-// the leg's real range is confirmed, same as was done for the hips.
+// same pulse mapping applies. Full 0-270 range confirmed safe by
+// testing; 140 is straight down (the home pose).
 // ============================================================
 const int KNEE_FL_MIN   = 0;
 const int KNEE_FL_MAX   = 270;
-const int KNEE_FL_START = 135; // datasheet neutral (1500us); refine after testing
+const int KNEE_FL_START = 140; // confirmed straight down
 
 Servo kneeFL;
 int   kneeFLPos;

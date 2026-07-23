@@ -91,13 +91,12 @@ int   hipPos[NUM_HIPS];
 // ============================================================
 // KNEE CONFIG — FL only for now
 // Same servo model as the hips (500-2500us, 270 degrees), so the
-// same pulse mapping applies. No mechanical limits are known yet --
-// jog cautiously in small steps and narrow KNEE_FL_MIN/MAX once
-// the leg's real range is confirmed, same as was done for the hips.
+// same pulse mapping applies. Full 0-270 range confirmed safe by
+// testing; 140 is straight down (the home pose).
 // ============================================================
 const int KNEE_FL_MIN   = 0;
 const int KNEE_FL_MAX   = 270;
-const int KNEE_FL_START = 135; // datasheet neutral (1500us); refine after testing
+const int KNEE_FL_START = 140; // confirmed straight down
 
 Servo kneeFL;
 int   kneeFLPos;
@@ -139,6 +138,68 @@ void setKneeFL(int angle) {
   kneeFLPos = angle;
   int pulse = map(angle, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   kneeFL.writeMicroseconds(pulse);
+}
+
+// ============================================================
+// FL LEG INVERSE KINEMATICS
+// Coordinate frame: origin at the FL hip pivot, x = forward (+),
+// y = down (+). hip_angle 30 is thigh straight down (theta1 = 0);
+// knee_angle 140 is calf in line with the thigh, fully extended
+// (theta2 = 0). Both joints share the same sign convention: below
+// their straight reference bends the segment back toward the
+// chassis, above bends it forward -- confirmed by testing.
+//
+// SAFETY: confirmed by physical testing that the full combined range
+// (thigh and knee both bent back to their limits at once) does not
+// contact the chassis -- but clearance there is tight, not
+// comfortable. No extra combined-angle limit is enforced beyond each
+// servo's own HIP_MIN/MAX and KNEE_FL_MIN/MAX. Re-verify this if the
+// leg geometry, mounting, or end-effector (e.g. foot vs. wheel) ever
+// changes, since that margin could disappear.
+// ============================================================
+const float LEG_THIGH_MM = 165.0;
+const float LEG_CALF_MM  = 105.0;
+
+// Solves 2-link planar IK for the FL leg. (x, y) is the desired foot
+// position relative to the hip pivot, in mm (x forward+, y down+).
+// Returns false if the target is out of reach; otherwise fills
+// hipAngleOut/kneeAngleOut with servo angles. These are not yet
+// clamped to this leg's HIP_MIN/MAX or KNEE_FL_MIN/MAX -- setFootFL()
+// still routes them through setHip()/setKneeFL(), which enforce those.
+bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
+  float d2 = x * x + y * y;
+  float d  = sqrt(d2);
+  if (d > (LEG_THIGH_MM + LEG_CALF_MM) || d < fabs(LEG_THIGH_MM - LEG_CALF_MM)) {
+    return false; // unreachable
+  }
+
+  float cosKnee = (d2 - LEG_THIGH_MM * LEG_THIGH_MM - LEG_CALF_MM * LEG_CALF_MM)
+                  / (2.0 * LEG_THIGH_MM * LEG_CALF_MM);
+  cosKnee = constrain(cosKnee, -1.0, 1.0);
+
+  // Knee bends backward (toward the chassis) to reach a shortened
+  // target, matching a normal walking gait where the foot lifts by
+  // folding the knee back and up. If the assembled leg needs the
+  // other branch instead, flip the sign here.
+  float theta2 = -acos(cosKnee);
+
+  float k1 = LEG_THIGH_MM + LEG_CALF_MM * cos(theta2);
+  float k2 = LEG_CALF_MM * sin(theta2);
+  float theta1 = atan2(x, y) - atan2(k2, k1);
+
+  hipAngleOut  = degrees(theta1) + 30.0;
+  kneeAngleOut = degrees(theta2) + 140.0;
+  return true;
+}
+
+// Moves the FL leg's foot to (x, y) mm relative to the hip pivot.
+// Returns false (leaving the servos untouched) if unreachable.
+bool setFootFL(float x, float y) {
+  float hipAngle, kneeAngle;
+  if (!solveLegIK_FL(x, y, hipAngle, kneeAngle)) return false;
+  setHip(FL, (int)round(hipAngle));
+  setKneeFL((int)round(kneeAngle));
+  return true;
 }
 
 void allHips(int angle) {
@@ -312,13 +373,29 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl <angle> | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl <angle> | foot_fl <x_mm> <y_mm> | sensors | help");
     Serial.println();
 
   } else if (input.startsWith("all ")) {
     int angle = input.substring(4).toInt();
     allHips(angle);
     Serial.print("All hips -> "); Serial.println(angle);
+
+  } else if (input.startsWith("foot_fl ")) {
+    String rest = input.substring(8);
+    int    sep  = rest.indexOf(' ');
+    if (sep > 0) {
+      float x = rest.substring(0, sep).toFloat();
+      float y = rest.substring(sep + 1).toFloat();
+      if (setFootFL(x, y)) {
+        Serial.print("foot_fl -> hip="); Serial.print(hipPos[FL]);
+        Serial.print(" knee="); Serial.println(kneeFLPos);
+      } else {
+        Serial.println("foot_fl target unreachable.");
+      }
+    } else {
+      Serial.println("Usage: foot_fl <x_mm> <y_mm>");
+    }
 
   } else {
     int space = input.indexOf(' ');

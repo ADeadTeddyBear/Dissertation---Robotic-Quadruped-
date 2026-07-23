@@ -1,15 +1,22 @@
 // ============================================================
 // QuadSensors.ino
-// Hip servo control + MPU6050 + dual VL53L1X (TOF400C)
+// Hip servo control + MPU6050 + dual VL53L0X (TOF400C)
 //
 // Libraries required (install via Library Manager):
-//   VL53L1X  by Pololu
+//   VL53L0X  by Pololu
 //   (MPU6050 driven via raw Wire — no extra library needed)
+//
+// VL53L0X notes (different chip/library from VL53L1X):
+//   - Max realistic range ~2m, vs VL53L1X's 4m.
+//   - No distance-mode selector; range/noise-immunity is traded off
+//     via setSignalRateLimit() + setVcselPulsePeriod() instead.
+//   - No per-reading range_status enum, so "no target" is inferred
+//     from the raw distance exceeding TOF_MAX_MM.
 // ============================================================
 
 #include <Wire.h>
 #include <Servo.h>
-#include <VL53L1X.h>
+#include <VL53L0X.h>
 
 // ============================================================
 // HIP SERVO PINS
@@ -20,7 +27,7 @@
 #define HIP_RR_PIN   8
 
 // ============================================================
-// VL53L1X XSHUT PINS
+// VL53L0X XSHUT PINS
 // ============================================================
 #define XSHUT_1   A0
 #define XSHUT_2   A1
@@ -54,16 +61,16 @@ int   hipPos[NUM_HIPS];
 // ============================================================
 // SENSOR OBJECTS
 // ============================================================
-VL53L1X tof1, tof2;
+VL53L0X tof1, tof2;
 bool tof1Active = false;
 bool tof2Active = false;
 
-uint16_t tof1_mm = 0, tof2_mm = 0;
-uint8_t  tof1_status = VL53L1X::None, tof2_status = VL53L1X::None;
-float    tof1_sig = 0, tof2_sig = 0;   // peak signal rate, MCPS
-float    tof1_amb = 0, tof2_amb = 0;   // ambient rate, MCPS
+#define TOF_MAX_MM 2000  // VL53L0X's realistic range ceiling; beyond this treat as "no target"
 
-#define FIRMWARE_BUILD "QuadSensors build 2026-07-23-c (dataReady poll + signal/ambient debug)"
+uint16_t tof1_mm = 0, tof2_mm = 0;
+bool     tof1_ok = false, tof2_ok = false;
+
+#define FIRMWARE_BUILD "QuadSensors build 2026-07-23-d (VL53L0X)"
 
 // ============================================================
 // TIMING
@@ -112,9 +119,9 @@ void readMPU6050(float &pitch, float &roll) {
 }
 
 // ============================================================
-// VL53L1X SETUP — sensor 2 booted first to avoid address clash
+// VL53L0X SETUP — sensor 2 booted first to avoid address clash
 // ============================================================
-void setupVL53L1X() {
+void setupVL53L0X() {
   pinMode(XSHUT_1, OUTPUT);
   pinMode(XSHUT_2, OUTPUT);
   digitalWrite(XSHUT_1, LOW);
@@ -128,11 +135,12 @@ void setupVL53L1X() {
   tof2.setTimeout(500);
   if (tof2.init()) {
     tof2.setAddress(TOF2_ADDR);
-    // Long mode's VCSEL period is unambiguous only from ~40cm out — closer
-    // targets fold into a shorter apparent range and can even count down as
-    // the real target recedes. Short mode is unambiguous over its full
-    // 0-1300mm span, which covers this sensor's mounted use case.
-    tof2.setDistanceMode(VL53L1X::Short);
+    // "Long range" tuning: lowering the signal rate limit and
+    // lengthening both VCSEL periods trades noise immunity for reach,
+    // out to VL53L0X's realistic ~2m ceiling.
+    tof2.setSignalRateLimit(0.1);
+    tof2.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
+    tof2.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
     tof2.setMeasurementTimingBudget(50000);
     tof2.startContinuous(100);
     tof2Active = true;
@@ -147,7 +155,9 @@ void setupVL53L1X() {
   tof1.setBus(&Wire);
   tof1.setTimeout(500);
   if (tof1.init()) {
-    tof1.setDistanceMode(VL53L1X::Short);
+    tof1.setSignalRateLimit(0.1);
+    tof1.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
+    tof1.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
     tof1.setMeasurementTimingBudget(50000);
     tof1.startContinuous(100);
     tof1Active = true;
@@ -159,35 +169,30 @@ void setupVL53L1X() {
 
 // ============================================================
 // POLL TOF SENSORS
-// VL53L1X::read(false) skips the dataReady() wait itself and
-// unconditionally clears the ranging interrupt, so calling it on a
-// fixed timer that isn't synced to the sensor's own measurement
-// cadence can catch it mid-update and hand back a torn register
-// read — which shows up as bogus, usually near-field, distance
-// values that get worse the weaker (longer-range) the real signal
-// is. Gating on dataReady() ourselves, every loop() pass, avoids
-// that race; printSensors() just reports the latest cached result.
+// readRangeContinuousMillimeters() blocks internally until a new
+// sample is ready, which would stall the servo/command loop while
+// waiting. RESULT_INTERRUPT_STATUS is the same register the
+// library's own blocking wait polls, so checking it ourselves first
+// lets us only call readRangeContinuousMillimeters() once a sample
+// is actually ready, keeping loop() responsive.
 // ============================================================
+bool tofDataReady(VL53L0X &s) {
+  return (s.readReg(VL53L0X::RESULT_INTERRUPT_STATUS) & 0x07) != 0;
+}
+
 void pollTofSensors() {
-  if (tof1Active && tof1.dataReady()) {
-    tof1_mm     = tof1.read(false);
-    tof1_status = tof1.ranging_data.range_status;
-    tof1_sig    = tof1.ranging_data.peak_signal_count_rate_MCPS;
-    tof1_amb    = tof1.ranging_data.ambient_count_rate_MCPS;
+  if (tof1Active && tofDataReady(tof1)) {
+    tof1_mm = tof1.readRangeContinuousMillimeters();
+    tof1_ok = !tof1.timeoutOccurred() && tof1_mm > 0 && tof1_mm <= TOF_MAX_MM;
   }
-  if (tof2Active && tof2.dataReady()) {
-    tof2_mm     = tof2.read(false);
-    tof2_status = tof2.ranging_data.range_status;
-    tof2_sig    = tof2.ranging_data.peak_signal_count_rate_MCPS;
-    tof2_amb    = tof2.ranging_data.ambient_count_rate_MCPS;
+  if (tof2Active && tofDataReady(tof2)) {
+    tof2_mm = tof2.readRangeContinuousMillimeters();
+    tof2_ok = !tof2.timeoutOccurred() && tof2_mm > 0 && tof2_mm <= TOF_MAX_MM;
   }
 }
 
 // ============================================================
 // PRINT SENSOR VALUES
-// A VL53L1X reading is only trustworthy when range_status == RangeValid —
-// checking it rejects wrapped/low-confidence reads (see WrapTargetFail in
-// setupVL53L1X()) instead of reporting a bogus, decreasing number.
 // ============================================================
 void printSensors() {
   float pitch, roll;
@@ -197,25 +202,21 @@ void printSensors() {
   Serial.print("  Roll:"); Serial.print(roll, 1);
 
   if (tof1Active) {
-    if (tof1_mm == 0 || tof1_mm == 65535 || tof1_status != VL53L1X::RangeValid) {
-      Serial.print("  ToF1:---(st"); Serial.print(tof1_status); Serial.print(")");
-    } else {
+    if (tof1_ok) {
       Serial.print("  ToF1:"); Serial.print(tof1_mm); Serial.print("mm");
+    } else {
+      Serial.print("  ToF1:---(raw="); Serial.print(tof1_mm); Serial.print(")");
     }
-    Serial.print(" [sig="); Serial.print(tof1_sig, 2);
-    Serial.print(" amb="); Serial.print(tof1_amb, 2); Serial.print("]");
   } else {
     Serial.print("  ToF1:N/A");
   }
 
   if (tof2Active) {
-    if (tof2_mm == 0 || tof2_mm == 65535 || tof2_status != VL53L1X::RangeValid) {
-      Serial.print("  ToF2:---(st"); Serial.print(tof2_status); Serial.print(")");
-    } else {
+    if (tof2_ok) {
       Serial.print("  ToF2:"); Serial.print(tof2_mm); Serial.print("mm");
+    } else {
+      Serial.print("  ToF2:---(raw="); Serial.print(tof2_mm); Serial.print(")");
     }
-    Serial.print(" [sig="); Serial.print(tof2_sig, 2);
-    Serial.print(" amb="); Serial.print(tof2_amb, 2); Serial.print("]");
   } else {
     Serial.print("  ToF2:N/A");
   }
@@ -304,7 +305,7 @@ void setup() {
   }
   Serial.println("Servos OK");
 
-  setupVL53L1X();
+  setupVL53L0X();
   setupMPU6050();
 
   Serial.println();

@@ -57,7 +57,8 @@ enum HipIndex { FL = 0, FR, RL, RR, NUM_HIPS };
 
 const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_PIN };
 // FL/FR are mechanically limited to 6/2 as their furthest inward point --
-// going lower risks the leg colliding with/damaging the robot.
+// going lower risks the leg colliding with/damaging the robot. RL/RR
+// confirmed clash-free all the way down to 0.
 const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
 // 170 = leg straight up; capped there (rather than the servo's full 270)
 // so it can't swing past vertical and clash with the top of the robot.

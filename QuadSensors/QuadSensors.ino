@@ -28,10 +28,13 @@
 
 // ============================================================
 // KNEE SERVO PINS
-// Only FL is wired so far; FR/RL/RR follow the same pattern once
-// their legs are physically added.
+// RL/RR are reserved but not wired yet; they follow the same pattern
+// once those legs are physically added.
 // ============================================================
 #define KNEE_FL_PIN  30
+#define KNEE_FR_PIN  31
+#define KNEE_RL_PIN  32
+#define KNEE_RR_PIN  33
 
 // ============================================================
 // VL53L0X XSHUT PINS
@@ -53,9 +56,9 @@
 enum HipIndex { FL = 0, FR, RL, RR, NUM_HIPS };
 
 const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_PIN };
-// FL is mechanically limited to 6 as its furthest inward point -- going
-// lower risks the leg colliding with/damaging the robot.
-const int  HIP_MIN[NUM_HIPS]    = {   6,   0,   0,   0 };
+// FL/FR are mechanically limited to 6/2 as their furthest inward point --
+// going lower risks the leg colliding with/damaging the robot.
+const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
 // 170 = leg straight up; capped there (rather than the servo's full 270)
 // so it can't swing past vertical and clash with the top of the robot.
 const int  HIP_MAX[NUM_HIPS]    = { 170, 170, 170, 170 };
@@ -89,17 +92,25 @@ Servo hipServos[NUM_HIPS];
 int   hipPos[NUM_HIPS];
 
 // ============================================================
-// KNEE CONFIG — FL only for now
+// KNEE CONFIG
 // Same servo model as the hips (500-2500us, 270 degrees), so the
-// same pulse mapping applies. Full 0-270 range confirmed safe by
-// testing; 140 is straight down (the home pose).
+// same pulse mapping applies. FL/FR are wired; RL/RR are reserved
+// placeholders until those legs are physically added -- kneeInstalled
+// gates setup()/updateServoMotion() so an uninstalled knee is never
+// attached or driven.
 // ============================================================
-const int KNEE_FL_MIN   = 0;
-const int KNEE_FL_MAX   = 270;
-const int KNEE_FL_START = 140; // confirmed straight down
+const int  KNEE_PINS[NUM_HIPS]     = { KNEE_FL_PIN, KNEE_FR_PIN, KNEE_RL_PIN, KNEE_RR_PIN };
+bool       kneeInstalled[NUM_HIPS] = { true, true, false, false };
+const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,   0,   0 };
+const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
+// FL confirmed straight down at 140 by testing; FR/RL/RR default to
+// the servo's datasheet neutral (1500us) pending their own by-eye
+// calibration, same process FL went through.
+const int  KNEE_START[NUM_HIPS]    = { 140, 135, 135, 135 };
+const char* KNEE_NAMES[NUM_HIPS]   = { "knee_fl", "knee_fr", "knee_rl", "knee_rr" };
 
-Servo kneeFL;
-int   kneeFLPos;
+Servo kneeServos[NUM_HIPS];
+int   kneePos[NUM_HIPS];
 
 // ============================================================
 // SENSOR OBJECTS
@@ -124,7 +135,7 @@ unsigned long lastSensorPrint = 0;
 // ============================================================
 // SERVO HELPERS
 // ============================================================
-// setHip()/setKneeFL() no longer jump straight to the target angle --
+// setHip()/setKnee() no longer jump straight to the target angle --
 // they hand it to the smooth-motion system below, which eases the
 // servo there over updateServoMotion() calls instead of snapping at
 // full speed.
@@ -133,9 +144,9 @@ void setHip(int i, int angle) {
   startHipMove(i, angle);
 }
 
-void setKneeFL(int angle) {
-  angle = constrain(angle, KNEE_FL_MIN, KNEE_FL_MAX);
-  startKneeFLMove(angle);
+void setKnee(int i, int angle) {
+  angle = constrain(angle, KNEE_MIN[i], KNEE_MAX[i]);
+  startKneeMove(i, angle);
 }
 
 // ============================================================
@@ -155,8 +166,8 @@ void setKneeFL(int angle) {
 float hipMoveFrom[NUM_HIPS], hipMoveTo[NUM_HIPS];
 unsigned long hipMoveStartMs[NUM_HIPS], hipMoveDurationMs[NUM_HIPS];
 
-float kneeFLMoveFrom, kneeFLMoveTo;
-unsigned long kneeFLMoveStartMs, kneeFLMoveDurationMs;
+float kneeMoveFrom[NUM_HIPS], kneeMoveTo[NUM_HIPS];
+unsigned long kneeMoveStartMs[NUM_HIPS], kneeMoveDurationMs[NUM_HIPS];
 
 float easeInOut(float progress) {
   return (1.0 - cos(progress * PI)) / 2.0;
@@ -173,10 +184,10 @@ void applyHipAngle(int i, float angle) {
   hipServos[i].writeMicroseconds(pulse);
 }
 
-void applyKneeFLAngle(float angle) {
-  kneeFLPos = (int)round(angle);
+void applyKneeAngle(int i, float angle) {
+  kneePos[i] = (int)round(angle);
   int pulse = map((int)round(angle), 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
-  kneeFL.writeMicroseconds(pulse);
+  kneeServos[i].writeMicroseconds(pulse);
 }
 
 void startHipMove(int i, int angle) {
@@ -186,11 +197,11 @@ void startHipMove(int i, int angle) {
   hipMoveDurationMs[i] = max((unsigned long)(fabs(angle - hipPos[i]) / HIP_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
 }
 
-void startKneeFLMove(int angle) {
-  kneeFLMoveFrom = kneeFLPos;
-  kneeFLMoveTo   = angle;
-  kneeFLMoveStartMs = millis();
-  kneeFLMoveDurationMs = max((unsigned long)(fabs(angle - kneeFLPos) / KNEE_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
+void startKneeMove(int i, int angle) {
+  kneeMoveFrom[i] = kneePos[i];
+  kneeMoveTo[i]   = angle;
+  kneeMoveStartMs[i] = millis();
+  kneeMoveDurationMs[i] = max((unsigned long)(fabs(angle - kneePos[i]) / KNEE_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
 }
 
 // Steps every in-progress move forward -- call every loop() pass.
@@ -204,14 +215,15 @@ void updateServoMotion() {
     } else {
       applyHipAngle(i, hipMoveFrom[i] + (hipMoveTo[i] - hipMoveFrom[i]) * easeInOut(progress));
     }
-  }
 
-  unsigned long elapsed = now - kneeFLMoveStartMs;
-  float progress = (float)elapsed / (float)kneeFLMoveDurationMs;
-  if (progress >= 1.0) {
-    applyKneeFLAngle(kneeFLMoveTo);
-  } else {
-    applyKneeFLAngle(kneeFLMoveFrom + (kneeFLMoveTo - kneeFLMoveFrom) * easeInOut(progress));
+    if (!kneeInstalled[i]) continue;
+    unsigned long kElapsed = now - kneeMoveStartMs[i];
+    float kProgress = (float)kElapsed / (float)kneeMoveDurationMs[i];
+    if (kProgress >= 1.0) {
+      applyKneeAngle(i, kneeMoveTo[i]);
+    } else {
+      applyKneeAngle(i, kneeMoveFrom[i] + (kneeMoveTo[i] - kneeMoveFrom[i]) * easeInOut(kProgress));
+    }
   }
 }
 
@@ -228,7 +240,7 @@ void updateServoMotion() {
 // (thigh and knee both bent back to their limits at once) does not
 // contact the chassis -- but clearance there is tight, not
 // comfortable. No extra combined-angle limit is enforced beyond each
-// servo's own HIP_MIN/MAX and KNEE_FL_MIN/MAX. Re-verify this if the
+// servo's own HIP_MIN/MAX and KNEE_MIN/MAX (FL entries). Re-verify this if the
 // leg geometry, mounting, or end-effector (e.g. foot vs. wheel) ever
 // changes, since that margin could disappear.
 // ============================================================
@@ -239,8 +251,8 @@ const float LEG_CALF_MM  = 105.0;
 // position relative to the hip pivot, in mm (x forward+, y down+).
 // Returns false if the target is out of reach; otherwise fills
 // hipAngleOut/kneeAngleOut with servo angles. These are not yet
-// clamped to this leg's HIP_MIN/MAX or KNEE_FL_MIN/MAX -- setFootFL()
-// still routes them through setHip()/setKneeFL(), which enforce those.
+// clamped to this leg's HIP_MIN/MAX or KNEE_MIN/MAX[FL] -- setFootFL()
+// still routes them through setHip()/setKnee(), which enforce those.
 bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
   float d2 = x * x + y * y;
   float d  = sqrt(d2);
@@ -279,10 +291,10 @@ bool setFootFL(float x, float y) {
   float hipAngle, kneeAngle;
   if (!solveLegIK_FL(x, y, hipAngle, kneeAngle)) return false;
   setHip(FL, (int)round(hipAngle));
-  setKneeFL((int)round(kneeAngle));
-  unsigned long dur = max(hipMoveDurationMs[FL], kneeFLMoveDurationMs);
-  hipMoveDurationMs[FL] = dur;
-  kneeFLMoveDurationMs  = dur;
+  setKnee(FL, (int)round(kneeAngle));
+  unsigned long dur = max(hipMoveDurationMs[FL], kneeMoveDurationMs[FL]);
+  hipMoveDurationMs[FL]  = dur;
+  kneeMoveDurationMs[FL] = dur;
   return true;
 }
 
@@ -457,7 +469,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl <angle> | foot_fl <x_mm> <y_mm> | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl <x_mm> <y_mm> | sensors | help");
     Serial.println();
 
   } else if (input.startsWith("all ")) {
@@ -473,7 +485,7 @@ void handleCommand(String input) {
       float y = rest.substring(sep + 1).toFloat();
       if (setFootFL(x, y)) {
         Serial.print("foot_fl -> hip="); Serial.print(hipPos[FL]);
-        Serial.print(" knee="); Serial.println(kneeFLPos);
+        Serial.print(" knee="); Serial.println(kneePos[FL]);
       } else {
         Serial.println("foot_fl target unreachable.");
       }
@@ -495,10 +507,16 @@ void handleCommand(String input) {
           break;
         }
       }
-      if (!found && name == "knee_fl") {
-        setKneeFL(angle);
-        Serial.print("knee_fl -> "); Serial.println(kneeFLPos);
-        found = true;
+      for (int i = 0; i < NUM_HIPS && !found; i++) {
+        if (name == KNEE_NAMES[i]) {
+          if (kneeInstalled[i]) {
+            setKnee(i, angle);
+            Serial.print(KNEE_NAMES[i]); Serial.print(" -> "); Serial.println(kneePos[i]);
+          } else {
+            Serial.print(KNEE_NAMES[i]); Serial.println(" not installed yet.");
+          }
+          found = true;
+        }
       }
       if (!found) Serial.println("Unknown command. Type 'help'.");
     } else {
@@ -523,10 +541,12 @@ void setup() {
     // snap to home), not a sweep from the uninitialized default of 0.
     hipPos[i] = HIP_START[i];
     setHip(i, HIP_START[i]);
+
+    if (!kneeInstalled[i]) continue;
+    kneeServos[i].attach(KNEE_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+    kneePos[i] = KNEE_START[i];
+    setKnee(i, KNEE_START[i]);
   }
-  kneeFL.attach(KNEE_FL_PIN, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
-  kneeFLPos = KNEE_FL_START;
-  setKneeFL(KNEE_FL_START);
   Serial.println("Servos OK");
 
   setupVL53L0X();

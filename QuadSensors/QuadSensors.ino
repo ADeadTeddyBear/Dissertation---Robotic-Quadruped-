@@ -107,6 +107,9 @@ const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
 // the servo's datasheet neutral (1500us) pending their own by-eye
 // calibration, same process FL went through.
 const int  KNEE_START[NUM_HIPS]    = { 140, 135, 135, 135 };
+// Right side knees are mounted opposite, same as the hips -- mirror
+// their angle so the same logical angle bends both sides the same way.
+const bool KNEE_MIRROR[NUM_HIPS]   = { false, true, false, true }; // FL, FR, RL, RR
 const char* KNEE_NAMES[NUM_HIPS]   = { "knee_fl", "knee_fr", "knee_rl", "knee_rr" };
 
 Servo kneeServos[NUM_HIPS];
@@ -186,7 +189,8 @@ void applyHipAngle(int i, float angle) {
 
 void applyKneeAngle(int i, float angle) {
   kneePos[i] = (int)round(angle);
-  int pulse = map((int)round(angle), 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+  int physical = KNEE_MIRROR[i] ? (270 - kneePos[i]) : kneePos[i];
+  int pulse = map(physical, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   kneeServos[i].writeMicroseconds(pulse);
 }
 

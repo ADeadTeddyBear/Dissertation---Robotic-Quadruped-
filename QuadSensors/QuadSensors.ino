@@ -148,8 +148,8 @@ void setKneeFL(int angle) {
 // actual max slew rate, leaving room to move slower than the
 // hardware's limit.
 // ============================================================
-#define HIP_MOVE_DEG_PER_SEC  90.0
-#define KNEE_MOVE_DEG_PER_SEC 90.0
+#define HIP_MOVE_DEG_PER_SEC  180.0
+#define KNEE_MOVE_DEG_PER_SEC 180.0
 #define MOVE_MIN_MS           50UL
 
 float hipMoveFrom[NUM_HIPS], hipMoveTo[NUM_HIPS];

@@ -58,6 +58,9 @@ VL53L1X tof1, tof2;
 bool tof1Active = false;
 bool tof2Active = false;
 
+uint16_t tof1_mm = 0, tof2_mm = 0;
+uint8_t  tof1_status = VL53L1X::None, tof2_status = VL53L1X::None;
+
 // ============================================================
 // TIMING
 // ============================================================
@@ -151,6 +154,28 @@ void setupVL53L1X() {
 }
 
 // ============================================================
+// POLL TOF SENSORS
+// VL53L1X::read(false) skips the dataReady() wait itself and
+// unconditionally clears the ranging interrupt, so calling it on a
+// fixed timer that isn't synced to the sensor's own measurement
+// cadence can catch it mid-update and hand back a torn register
+// read — which shows up as bogus, usually near-field, distance
+// values that get worse the weaker (longer-range) the real signal
+// is. Gating on dataReady() ourselves, every loop() pass, avoids
+// that race; printSensors() just reports the latest cached result.
+// ============================================================
+void pollTofSensors() {
+  if (tof1Active && tof1.dataReady()) {
+    tof1_mm     = tof1.read(false);
+    tof1_status = tof1.ranging_data.range_status;
+  }
+  if (tof2Active && tof2.dataReady()) {
+    tof2_mm     = tof2.read(false);
+    tof2_status = tof2.ranging_data.range_status;
+  }
+}
+
+// ============================================================
 // PRINT SENSOR VALUES
 // A VL53L1X reading is only trustworthy when range_status == RangeValid —
 // checking it rejects wrapped/low-confidence reads (see WrapTargetFail in
@@ -164,24 +189,20 @@ void printSensors() {
   Serial.print("  Roll:"); Serial.print(roll, 1);
 
   if (tof1Active) {
-    uint16_t d1 = tof1.read(false);
-    uint8_t  s1 = tof1.ranging_data.range_status;
-    if (d1 == 0 || d1 == 65535 || s1 != VL53L1X::RangeValid) {
-      Serial.print("  ToF1:---(st"); Serial.print(s1); Serial.print(")");
+    if (tof1_mm == 0 || tof1_mm == 65535 || tof1_status != VL53L1X::RangeValid) {
+      Serial.print("  ToF1:---(st"); Serial.print(tof1_status); Serial.print(")");
     } else {
-      Serial.print("  ToF1:"); Serial.print(d1); Serial.print("mm");
+      Serial.print("  ToF1:"); Serial.print(tof1_mm); Serial.print("mm");
     }
   } else {
     Serial.print("  ToF1:N/A");
   }
 
   if (tof2Active) {
-    uint16_t d2 = tof2.read(false);
-    uint8_t  s2 = tof2.ranging_data.range_status;
-    if (d2 == 0 || d2 == 65535 || s2 != VL53L1X::RangeValid) {
-      Serial.print("  ToF2:---(st"); Serial.print(s2); Serial.print(")");
+    if (tof2_mm == 0 || tof2_mm == 65535 || tof2_status != VL53L1X::RangeValid) {
+      Serial.print("  ToF2:---(st"); Serial.print(tof2_status); Serial.print(")");
     } else {
-      Serial.print("  ToF2:"); Serial.print(d2); Serial.print("mm");
+      Serial.print("  ToF2:"); Serial.print(tof2_mm); Serial.print("mm");
     }
   } else {
     Serial.print("  ToF2:N/A");
@@ -282,6 +303,9 @@ void setup() {
 // LOOP
 // ============================================================
 void loop() {
+  // Pick up new ToF data as soon as it's ready, independent of the print timer
+  pollTofSensors();
+
   // Auto sensor print every 200ms
   if (millis() - lastSensorPrint >= SENSOR_INTERVAL_MS) {
     printSensors();

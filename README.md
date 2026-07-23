@@ -1,2 +1,2 @@
 # Dissertation---Robotic-Quadruped-
-Will contain CAD files and code
+This will include a part list - Pin list - wiring diagram and CAD files

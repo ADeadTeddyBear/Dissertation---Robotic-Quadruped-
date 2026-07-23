@@ -121,7 +121,11 @@ void setupVL53L1X() {
   tof2.setTimeout(500);
   if (tof2.init()) {
     tof2.setAddress(TOF2_ADDR);
-    tof2.setDistanceMode(VL53L1X::Long);
+    // Long mode's VCSEL period is unambiguous only from ~40cm out — closer
+    // targets fold into a shorter apparent range and can even count down as
+    // the real target recedes. Short mode is unambiguous over its full
+    // 0-1300mm span, which covers this sensor's mounted use case.
+    tof2.setDistanceMode(VL53L1X::Short);
     tof2.setMeasurementTimingBudget(50000);
     tof2.startContinuous(100);
     tof2Active = true;
@@ -136,7 +140,7 @@ void setupVL53L1X() {
   tof1.setBus(&Wire);
   tof1.setTimeout(500);
   if (tof1.init()) {
-    tof1.setDistanceMode(VL53L1X::Long);
+    tof1.setDistanceMode(VL53L1X::Short);
     tof1.setMeasurementTimingBudget(50000);
     tof1.startContinuous(100);
     tof1Active = true;
@@ -148,13 +152,9 @@ void setupVL53L1X() {
 
 // ============================================================
 // PRINT SENSOR VALUES
-// A VL53L1X reading is only trustworthy when range_status == RangeValid.
-// Beyond a certain distance the true target return gets weak enough that
-// a fixed, close-in reflection (crosstalk — from a cover, mount lip, or
-// the other sensor's housing sitting inside the FOV) can dominate the
-// measurement, which is what makes the reported mm value fall as the
-// real distance keeps increasing. Checking range_status rejects those
-// reads instead of reporting the bogus, decreasing number.
+// A VL53L1X reading is only trustworthy when range_status == RangeValid —
+// checking it rejects wrapped/low-confidence reads (see WrapTargetFail in
+// setupVL53L1X()) instead of reporting a bogus, decreasing number.
 // ============================================================
 void printSensors() {
   float pitch, roll;

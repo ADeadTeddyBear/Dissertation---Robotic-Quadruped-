@@ -47,11 +47,20 @@ enum HipIndex { FL = 0, FR, RL, RR, NUM_HIPS };
 
 const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_PIN };
 const int  HIP_MIN[NUM_HIPS]    = {   0,   0,   0,   0 };
-const int  HIP_MAX[NUM_HIPS]    = { 270, 270, 270, 270 };
-const int  HIP_START[NUM_HIPS]  = { 135, 135, 135, 135 };
+// 170 = leg straight up; capped there (rather than the servo's full 270)
+// so it can't swing past vertical and clash with the top of the robot.
+const int  HIP_MAX[NUM_HIPS]    = { 170, 170, 170, 170 };
+// 30 = leg straight down (the home pose for IK); 0-30 lets the leg swing
+// inward a bit from there, 30-170 covers the rest of its outward/upward travel.
+const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };
 // Right side servos are mounted opposite — mirror their angle so
-// sending 135 to FL and FR both means "centred"
+// sending 30 to FL and FR both means "straight down"
 const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, RR
+// Per-servo calibration: added before mirroring so commanding the same
+// logical angle (e.g. 30) points every leg straight down, regardless of
+// how each servo horn happens to be seated. Fill in from the by-eye
+// calibration: trim = (angle that looked straight down) - 30.
+const int  HIP_TRIM[NUM_HIPS]   = { 0, 0, 0, 0 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 
@@ -84,7 +93,8 @@ unsigned long lastSensorPrint = 0;
 void setHip(int i, int angle) {
   angle = constrain(angle, HIP_MIN[i], HIP_MAX[i]);
   hipPos[i] = angle;
-  int physical = HIP_MIRROR[i] ? (270 - angle) : angle;
+  int trimmed = constrain(angle + HIP_TRIM[i], HIP_MIN[i], HIP_MAX[i]);
+  int physical = HIP_MIRROR[i] ? (270 - trimmed) : trimmed;
   hipServos[i].write(physical);
 }
 

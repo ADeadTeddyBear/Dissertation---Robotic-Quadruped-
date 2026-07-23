@@ -27,6 +27,13 @@
 #define HIP_RR_PIN   8
 
 // ============================================================
+// KNEE SERVO PINS
+// Only FL is wired so far; FR/RL/RR follow the same pattern once
+// their legs are physically added.
+// ============================================================
+#define KNEE_FL_PIN  30
+
+// ============================================================
 // VL53L0X XSHUT PINS
 // ============================================================
 #define XSHUT_1   A0
@@ -82,6 +89,20 @@ Servo hipServos[NUM_HIPS];
 int   hipPos[NUM_HIPS];
 
 // ============================================================
+// KNEE CONFIG — FL only for now
+// Same servo model as the hips (500-2500us, 270 degrees), so the
+// same pulse mapping applies. No mechanical limits are known yet --
+// jog cautiously in small steps and narrow KNEE_FL_MIN/MAX once
+// the leg's real range is confirmed, same as was done for the hips.
+// ============================================================
+const int KNEE_FL_MIN   = 0;
+const int KNEE_FL_MAX   = 270;
+const int KNEE_FL_START = 135; // datasheet neutral (1500us); refine after testing
+
+Servo kneeFL;
+int   kneeFLPos;
+
+// ============================================================
 // SENSOR OBJECTS
 // ============================================================
 VL53L0X tof1, tof2;
@@ -111,6 +132,13 @@ void setHip(int i, int angle) {
   int physical = HIP_MIRROR[i] ? (270 - trimmed) : trimmed;
   int pulse = map(physical, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   hipServos[i].writeMicroseconds(pulse);
+}
+
+void setKneeFL(int angle) {
+  angle = constrain(angle, KNEE_FL_MIN, KNEE_FL_MAX);
+  kneeFLPos = angle;
+  int pulse = map(angle, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+  kneeFL.writeMicroseconds(pulse);
 }
 
 void allHips(int angle) {
@@ -284,7 +312,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl <angle> | sensors | help");
     Serial.println();
 
   } else if (input.startsWith("all ")) {
@@ -305,6 +333,11 @@ void handleCommand(String input) {
           found = true;
           break;
         }
+      }
+      if (!found && name == "knee_fl") {
+        setKneeFL(angle);
+        Serial.print("knee_fl -> "); Serial.println(kneeFLPos);
+        found = true;
       }
       if (!found) Serial.println("Unknown command. Type 'help'.");
     } else {
@@ -327,6 +360,8 @@ void setup() {
     hipServos[i].attach(HIP_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
     setHip(i, HIP_START[i]);
   }
+  kneeFL.attach(KNEE_FL_PIN, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+  setKneeFL(KNEE_FL_START);
   Serial.println("Servos OK");
 
   setupVL53L0X();

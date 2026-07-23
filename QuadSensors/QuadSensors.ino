@@ -60,6 +60,10 @@ bool tof2Active = false;
 
 uint16_t tof1_mm = 0, tof2_mm = 0;
 uint8_t  tof1_status = VL53L1X::None, tof2_status = VL53L1X::None;
+float    tof1_sig = 0, tof2_sig = 0;   // peak signal rate, MCPS
+float    tof1_amb = 0, tof2_amb = 0;   // ambient rate, MCPS
+
+#define FIRMWARE_BUILD "QuadSensors build 2026-07-23-c (dataReady poll + signal/ambient debug)"
 
 // ============================================================
 // TIMING
@@ -168,10 +172,14 @@ void pollTofSensors() {
   if (tof1Active && tof1.dataReady()) {
     tof1_mm     = tof1.read(false);
     tof1_status = tof1.ranging_data.range_status;
+    tof1_sig    = tof1.ranging_data.peak_signal_count_rate_MCPS;
+    tof1_amb    = tof1.ranging_data.ambient_count_rate_MCPS;
   }
   if (tof2Active && tof2.dataReady()) {
     tof2_mm     = tof2.read(false);
     tof2_status = tof2.ranging_data.range_status;
+    tof2_sig    = tof2.ranging_data.peak_signal_count_rate_MCPS;
+    tof2_amb    = tof2.ranging_data.ambient_count_rate_MCPS;
   }
 }
 
@@ -194,6 +202,8 @@ void printSensors() {
     } else {
       Serial.print("  ToF1:"); Serial.print(tof1_mm); Serial.print("mm");
     }
+    Serial.print(" [sig="); Serial.print(tof1_sig, 2);
+    Serial.print(" amb="); Serial.print(tof1_amb, 2); Serial.print("]");
   } else {
     Serial.print("  ToF1:N/A");
   }
@@ -204,6 +214,8 @@ void printSensors() {
     } else {
       Serial.print("  ToF2:"); Serial.print(tof2_mm); Serial.print("mm");
     }
+    Serial.print(" [sig="); Serial.print(tof2_sig, 2);
+    Serial.print(" amb="); Serial.print(tof2_amb, 2); Serial.print("]");
   } else {
     Serial.print("  ToF2:N/A");
   }
@@ -281,6 +293,7 @@ void handleCommand(String input) {
 void setup() {
   Serial.begin(115200);
   delay(2000);
+  Serial.println(FIRMWARE_BUILD);
   Serial.println("Booting...");
   Wire.begin();
 

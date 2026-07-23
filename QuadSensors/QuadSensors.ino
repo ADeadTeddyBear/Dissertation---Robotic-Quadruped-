@@ -62,8 +62,9 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, R
 // calibration: trim = (angle that looked straight down) - 30.
 // FL calibrated: 44 looked straight down -> trim +14.
 // FR calibrated: 67 looked straight down -> trim +37.
-// RL/RR still pending.
-const int  HIP_TRIM[NUM_HIPS]   = { 14, 37, 0, 0 };
+// RL calibrated: 43 looked straight down -> trim +13.
+// RR calibrated: 63 looked straight down -> trim +33.
+const int  HIP_TRIM[NUM_HIPS]   = { 14, 37, 13, 33 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 

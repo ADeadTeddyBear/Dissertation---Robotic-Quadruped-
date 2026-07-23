@@ -149,12 +149,13 @@ void setKneeFL(int angle) {
 // their straight reference bends the segment back toward the
 // chassis, above bends it forward -- confirmed by testing.
 //
-// SAFETY: bending the thigh back (hip_angle < 30) and the knee back
-// (knee_angle < 140) at the same time can drive the calf into the
-// chassis, and there's no combined-angle limit enforced here yet --
-// it hasn't been measured. Test any new foot target cautiously in
-// small steps, especially targets behind/above the hip pivot, until
-// a safe combined limit is confirmed.
+// SAFETY: confirmed by physical testing that the full combined range
+// (thigh and knee both bent back to their limits at once) does not
+// contact the chassis -- but clearance there is tight, not
+// comfortable. No extra combined-angle limit is enforced beyond each
+// servo's own HIP_MIN/MAX and KNEE_FL_MIN/MAX. Re-verify this if the
+// leg geometry, mounting, or end-effector (e.g. foot vs. wheel) ever
+// changes, since that margin could disappear.
 // ============================================================
 const float LEG_THIGH_MM = 165.0;
 const float LEG_CALF_MM  = 105.0;

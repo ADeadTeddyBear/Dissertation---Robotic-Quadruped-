@@ -47,9 +47,11 @@ enum HipIndex { FL = 0, FR, RL, RR, NUM_HIPS };
 
 const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_PIN };
 const int  HIP_MIN[NUM_HIPS]    = {   0,   0,   0,   0 };
-const int  HIP_MAX[NUM_HIPS]    = { 270, 270, 270, 270 };
+// 170 = leg straight up; capped there (rather than the servo's full 270)
+// so it can't swing past vertical and clash with the top of the robot.
+const int  HIP_MAX[NUM_HIPS]    = { 170, 170, 170, 170 };
 // 30 = leg straight down (the home pose for IK); 0-30 lets the leg swing
-// inward a bit from there, 30-270 covers the rest of its outward travel.
+// inward a bit from there, 30-170 covers the rest of its outward/upward travel.
 const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };
 // Right side servos are mounted opposite — mirror their angle so
 // sending 30 to FL and FR both means "straight down"

@@ -72,12 +72,11 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, R
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
-// FL re-calibrated with the full leg (hip+knee) assembled: 38 looked
-// straight -> trim +8.
+// FL re-calibrated again: 42 looked straight -> trim +12.
 // FR calibrated: 67 looked straight down -> trim +37.
 // RL calibrated: 43 looked straight down -> trim +13.
 // RR calibrated: 63 looked straight down -> trim +33.
-const int  HIP_TRIM[NUM_HIPS]   = { 8, 37, 13, 33 };
+const int  HIP_TRIM[NUM_HIPS]   = { 12, 37, 13, 33 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 
@@ -233,36 +232,38 @@ void updateServoMotion() {
 }
 
 // ============================================================
-// FL LEG INVERSE KINEMATICS
-// Coordinate frame: origin at the FL hip pivot, x = forward (+),
-// y = down (+). HIP_START[FL] is thigh straight down (theta1 = 0);
-// KNEE_START[FL] is calf in line with the thigh, fully extended
+// LEG INVERSE KINEMATICS
+// Coordinate frame: origin at the leg's own hip pivot, x = forward
+// (+), y = down (+). HIP_START[i] is thigh straight down (theta1 =
+// 0); KNEE_START[i] is calf in line with the thigh, fully extended
 // (theta2 = 0) -- both referenced directly from the calibrated
-// constants below rather than hardcoded, so a recalibration (e.g.
-// after reassembling the leg) can't silently desync the IK math
-// from the actual servo zero points. Both joints share the same
-// sign convention: below their straight reference bends the segment
-// back toward the chassis, above bends it forward -- confirmed by
-// testing.
+// constants rather than hardcoded, so a recalibration (e.g. after
+// reassembling a leg) can't silently desync the IK math from the
+// actual servo zero points. Both joints share the same sign
+// convention on every leg -- mirroring is handled transparently by
+// setHip()/setKnee() -- below the straight reference bends the
+// segment back toward the chassis, above bends it forward,
+// confirmed by testing on FL.
 //
-// SAFETY: confirmed by physical testing that the full combined range
-// (thigh and knee both bent back to their limits at once) does not
-// contact the chassis -- but clearance there is tight, not
-// comfortable. No extra combined-angle limit is enforced beyond each
-// servo's own HIP_MIN/MAX and KNEE_MIN/MAX (FL entries). Re-verify this if the
-// leg geometry, mounting, or end-effector (e.g. foot vs. wheel) ever
-// changes, since that margin could disappear.
+// SAFETY: the "full combined range (thigh and knee both bent back to
+// their limits at once) doesn't hit the chassis" check has only been
+// physically confirmed for FL so far. FR (and RL/RR later) need
+// their own confirmation before trusting foot_* near the back of
+// their workspace -- mirrored legs aren't guaranteed identical
+// clearance, the same reason FR needed its own hip_fr minimum (2)
+// distinct from FL's (6). No combined-angle limit is enforced beyond
+// each leg's own HIP_MIN/MAX and KNEE_MIN/MAX.
 // ============================================================
 const float LEG_THIGH_MM = 165.0;
 const float LEG_CALF_MM  = 105.0;
 
-// Solves 2-link planar IK for the FL leg. (x, y) is the desired foot
-// position relative to the hip pivot, in mm (x forward+, y down+).
-// Returns false if the target is out of reach; otherwise fills
-// hipAngleOut/kneeAngleOut with servo angles. These are not yet
-// clamped to this leg's HIP_MIN/MAX or KNEE_MIN/MAX[FL] -- setFootFL()
-// still routes them through setHip()/setKnee(), which enforce those.
-bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
+// Solves 2-link planar IK for leg i. (x, y) is the desired foot
+// position relative to that leg's hip pivot, in mm (x forward+, y
+// down+). Returns false if the target is out of reach; otherwise
+// fills hipAngleOut/kneeAngleOut with servo angles. These are not yet
+// clamped to leg i's HIP_MIN/MAX or KNEE_MIN/MAX -- setFoot() still
+// routes them through setHip()/setKnee(), which enforce those.
+bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut) {
   float d2 = x * x + y * y;
   float d  = sqrt(d2);
   if (d > (LEG_THIGH_MM + LEG_CALF_MM) || d < fabs(LEG_THIGH_MM - LEG_CALF_MM)) {
@@ -275,7 +276,7 @@ bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
 
   // Knee bends backward (toward the chassis) to reach a shortened
   // target, matching a normal walking gait where the foot lifts by
-  // folding the knee back and up. If the assembled leg needs the
+  // folding the knee back and up. If an assembled leg needs the
   // other branch instead, flip the sign here.
   float theta2 = -acos(cosKnee);
 
@@ -283,27 +284,27 @@ bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
   float k2 = LEG_CALF_MM * sin(theta2);
   float theta1 = atan2(x, y) - atan2(k2, k1);
 
-  hipAngleOut  = degrees(theta1) + HIP_START[FL];
-  kneeAngleOut = degrees(theta2) + KNEE_START[FL];
+  hipAngleOut  = degrees(theta1) + HIP_START[i];
+  kneeAngleOut = degrees(theta2) + KNEE_START[i];
   return true;
 }
 
-// Moves the FL leg's foot to (x, y) mm relative to the hip pivot.
-// Returns false (leaving the servos untouched) if unreachable.
-// Synchronizes the hip's and knee's move durations so they arrive
-// together -- otherwise whichever joint has the smaller move finishes
-// first and the foot arcs through an unintended path for the rest of
-// the move (each joint still eases independently in angle-space, so
-// this isn't a true straight-line Cartesian path, just a closer
+// Moves leg i's foot to (x, y) mm relative to its hip pivot. Returns
+// false (leaving the servos untouched) if unreachable. Synchronizes
+// the hip's and knee's move durations so they arrive together --
+// otherwise whichever joint has the smaller move finishes first and
+// the foot arcs through an unintended path for the rest of the move
+// (each joint still eases independently in angle-space, so this
+// isn't a true straight-line Cartesian path, just a closer
 // approximation than leaving the durations independent).
-bool setFootFL(float x, float y) {
+bool setFoot(int i, float x, float y) {
   float hipAngle, kneeAngle;
-  if (!solveLegIK_FL(x, y, hipAngle, kneeAngle)) return false;
-  setHip(FL, (int)round(hipAngle));
-  setKnee(FL, (int)round(kneeAngle));
-  unsigned long dur = max(hipMoveDurationMs[FL], kneeMoveDurationMs[FL]);
-  hipMoveDurationMs[FL]  = dur;
-  kneeMoveDurationMs[FL] = dur;
+  if (!solveLegIK(i, x, y, hipAngle, kneeAngle)) return false;
+  setHip(i, (int)round(hipAngle));
+  setKnee(i, (int)round(kneeAngle));
+  unsigned long dur = max(hipMoveDurationMs[i], kneeMoveDurationMs[i]);
+  hipMoveDurationMs[i]  = dur;
+  kneeMoveDurationMs[i] = dur;
   return true;
 }
 
@@ -478,7 +479,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl <x_mm> <y_mm> | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | sensors | help");
     Serial.println();
 
   } else if (input.startsWith("all ")) {
@@ -486,20 +487,22 @@ void handleCommand(String input) {
     allHips(angle);
     Serial.print("All hips -> "); Serial.println(angle);
 
-  } else if (input.startsWith("foot_fl ")) {
+  } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ")) {
+    int legIdx = input.startsWith("foot_fl ") ? FL : FR;
+    const char *legName = (legIdx == FL) ? "foot_fl" : "foot_fr";
     String rest = input.substring(8);
     int    sep  = rest.indexOf(' ');
     if (sep > 0) {
       float x = rest.substring(0, sep).toFloat();
       float y = rest.substring(sep + 1).toFloat();
-      if (setFootFL(x, y)) {
-        Serial.print("foot_fl -> hip="); Serial.print(hipPos[FL]);
-        Serial.print(" knee="); Serial.println(kneePos[FL]);
+      if (setFoot(legIdx, x, y)) {
+        Serial.print(legName); Serial.print(" -> hip="); Serial.print(hipPos[legIdx]);
+        Serial.print(" knee="); Serial.println(kneePos[legIdx]);
       } else {
-        Serial.println("foot_fl target unreachable.");
+        Serial.print(legName); Serial.println(" target unreachable.");
       }
     } else {
-      Serial.println("Usage: foot_fl <x_mm> <y_mm>");
+      Serial.print("Usage: "); Serial.print(legName); Serial.println(" <x_mm> <y_mm>");
     }
 
   } else {

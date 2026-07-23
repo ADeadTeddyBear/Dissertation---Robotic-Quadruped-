@@ -72,11 +72,12 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, R
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
-// FL calibrated: 44 looked straight down -> trim +14.
+// FL re-calibrated with the full leg (hip+knee) assembled: 38 looked
+// straight -> trim +8.
 // FR calibrated: 67 looked straight down -> trim +37.
 // RL calibrated: 43 looked straight down -> trim +13.
 // RR calibrated: 63 looked straight down -> trim +33.
-const int  HIP_TRIM[NUM_HIPS]   = { 14, 37, 13, 33 };
+const int  HIP_TRIM[NUM_HIPS]   = { 8, 37, 13, 33 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 
@@ -103,10 +104,10 @@ const int  KNEE_PINS[NUM_HIPS]     = { KNEE_FL_PIN, KNEE_FR_PIN, KNEE_RL_PIN, KN
 bool       kneeInstalled[NUM_HIPS] = { true, true, false, false };
 const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,   0,   0 };
 const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
-// FL confirmed straight down at 140 by testing; FR/RL/RR default to
-// the servo's datasheet neutral (1500us) pending their own by-eye
-// calibration, same process FL went through.
-const int  KNEE_START[NUM_HIPS]    = { 140, 135, 135, 135 };
+// FL/FR re-calibrated with the full leg (hip+knee) assembled: FL
+// straight at 116, FR straight at 115. RL/RR default to the servo's
+// datasheet neutral (1500us) pending their own by-eye calibration.
+const int  KNEE_START[NUM_HIPS]    = { 116, 115, 135, 135 };
 // Right side knees are mounted opposite, same as the hips -- mirror
 // their angle so the same logical angle bends both sides the same way.
 const bool KNEE_MIRROR[NUM_HIPS]   = { false, true, false, true }; // FL, FR, RL, RR
@@ -234,11 +235,15 @@ void updateServoMotion() {
 // ============================================================
 // FL LEG INVERSE KINEMATICS
 // Coordinate frame: origin at the FL hip pivot, x = forward (+),
-// y = down (+). hip_angle 30 is thigh straight down (theta1 = 0);
-// knee_angle 140 is calf in line with the thigh, fully extended
-// (theta2 = 0). Both joints share the same sign convention: below
-// their straight reference bends the segment back toward the
-// chassis, above bends it forward -- confirmed by testing.
+// y = down (+). HIP_START[FL] is thigh straight down (theta1 = 0);
+// KNEE_START[FL] is calf in line with the thigh, fully extended
+// (theta2 = 0) -- both referenced directly from the calibrated
+// constants below rather than hardcoded, so a recalibration (e.g.
+// after reassembling the leg) can't silently desync the IK math
+// from the actual servo zero points. Both joints share the same
+// sign convention: below their straight reference bends the segment
+// back toward the chassis, above bends it forward -- confirmed by
+// testing.
 //
 // SAFETY: confirmed by physical testing that the full combined range
 // (thigh and knee both bent back to their limits at once) does not
@@ -278,8 +283,8 @@ bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
   float k2 = LEG_CALF_MM * sin(theta2);
   float theta1 = atan2(x, y) - atan2(k2, k1);
 
-  hipAngleOut  = degrees(theta1) + 30.0;
-  kneeAngleOut = degrees(theta2) + 140.0;
+  hipAngleOut  = degrees(theta1) + HIP_START[FL];
+  kneeAngleOut = degrees(theta2) + KNEE_START[FL];
   return true;
 }
 

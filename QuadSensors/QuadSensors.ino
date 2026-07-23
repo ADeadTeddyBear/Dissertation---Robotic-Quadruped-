@@ -60,9 +60,18 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, R
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
-const int  HIP_TRIM[NUM_HIPS]   = { 0, 0, 0, 0 };
+// FL calibrated: 38 looked straight down -> trim +8. FR/RL/RR still pending.
+const int  HIP_TRIM[NUM_HIPS]   = { 8, 0, 0, 0 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
+
+// These are 270-degree servos (500-2500us pulse width, per datasheet).
+// Arduino's Servo::write() only accepts 0-180 as a "degrees" argument and
+// silently clamps anything above that, which flattens the whole upper half
+// of a 270-degree range onto a single position. Driving the pulse width
+// directly via writeMicroseconds() avoids that clamp entirely.
+#define SERVO_PULSE_MIN_US 500
+#define SERVO_PULSE_MAX_US 2500
 
 Servo hipServos[NUM_HIPS];
 int   hipPos[NUM_HIPS];
@@ -95,7 +104,8 @@ void setHip(int i, int angle) {
   hipPos[i] = angle;
   int trimmed = constrain(angle + HIP_TRIM[i], HIP_MIN[i], HIP_MAX[i]);
   int physical = HIP_MIRROR[i] ? (270 - trimmed) : trimmed;
-  hipServos[i].write(physical);
+  int pulse = map(physical, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+  hipServos[i].writeMicroseconds(pulse);
 }
 
 void allHips(int angle) {
@@ -309,9 +319,8 @@ void setup() {
   Wire.begin();
 
   for (int i = 0; i < NUM_HIPS; i++) {
-    hipServos[i].attach(HIP_PINS[i]);
-    hipPos[i] = HIP_START[i];
-    hipServos[i].write(hipPos[i]);
+    hipServos[i].attach(HIP_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+    setHip(i, HIP_START[i]);
   }
   Serial.println("Servos OK");
 

@@ -124,20 +124,95 @@ unsigned long lastSensorPrint = 0;
 // ============================================================
 // SERVO HELPERS
 // ============================================================
+// setHip()/setKneeFL() no longer jump straight to the target angle --
+// they hand it to the smooth-motion system below, which eases the
+// servo there over updateServoMotion() calls instead of snapping at
+// full speed.
 void setHip(int i, int angle) {
   angle = constrain(angle, HIP_MIN[i], HIP_MAX[i]);
-  hipPos[i] = angle;
-  int trimmed = constrain(angle + HIP_TRIM[i], HIP_MIN[i], HIP_MAX[i]);
+  startHipMove(i, angle);
+}
+
+void setKneeFL(int angle) {
+  angle = constrain(angle, KNEE_FL_MIN, KNEE_FL_MAX);
+  startKneeFLMove(angle);
+}
+
+// ============================================================
+// SMOOTH SERVO MOTION
+// A cosine ease (zero slope at both ends, so motion ramps up then
+// back down instead of snapping to full speed and stopping dead)
+// applied over a duration scaled to the size of the move, so small
+// and large moves both take a sensible amount of time. Tune
+// *_MOVE_DEG_PER_SEC by feel -- both are well under the servos'
+// actual max slew rate, leaving room to move slower than the
+// hardware's limit.
+// ============================================================
+#define HIP_MOVE_DEG_PER_SEC  90.0
+#define KNEE_MOVE_DEG_PER_SEC 90.0
+#define MOVE_MIN_MS           50UL
+
+float hipMoveFrom[NUM_HIPS], hipMoveTo[NUM_HIPS];
+unsigned long hipMoveStartMs[NUM_HIPS], hipMoveDurationMs[NUM_HIPS];
+
+float kneeFLMoveFrom, kneeFLMoveTo;
+unsigned long kneeFLMoveStartMs, kneeFLMoveDurationMs;
+
+float easeInOut(float progress) {
+  return (1.0 - cos(progress * PI)) / 2.0;
+}
+
+// Physically writes a hip servo to an exact logical angle right now --
+// bypasses easing. Used internally by updateServoMotion() as it steps
+// through a move.
+void applyHipAngle(int i, float angle) {
+  hipPos[i] = (int)round(angle);
+  int trimmed = (int)constrain(round(angle) + HIP_TRIM[i], HIP_MIN[i], HIP_MAX[i]);
   int physical = HIP_MIRROR[i] ? (270 - trimmed) : trimmed;
   int pulse = map(physical, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   hipServos[i].writeMicroseconds(pulse);
 }
 
-void setKneeFL(int angle) {
-  angle = constrain(angle, KNEE_FL_MIN, KNEE_FL_MAX);
-  kneeFLPos = angle;
-  int pulse = map(angle, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+void applyKneeFLAngle(float angle) {
+  kneeFLPos = (int)round(angle);
+  int pulse = map((int)round(angle), 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   kneeFL.writeMicroseconds(pulse);
+}
+
+void startHipMove(int i, int angle) {
+  hipMoveFrom[i] = hipPos[i];
+  hipMoveTo[i]   = angle;
+  hipMoveStartMs[i] = millis();
+  hipMoveDurationMs[i] = max((unsigned long)(fabs(angle - hipPos[i]) / HIP_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
+}
+
+void startKneeFLMove(int angle) {
+  kneeFLMoveFrom = kneeFLPos;
+  kneeFLMoveTo   = angle;
+  kneeFLMoveStartMs = millis();
+  kneeFLMoveDurationMs = max((unsigned long)(fabs(angle - kneeFLPos) / KNEE_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
+}
+
+// Steps every in-progress move forward -- call every loop() pass.
+void updateServoMotion() {
+  unsigned long now = millis();
+  for (int i = 0; i < NUM_HIPS; i++) {
+    unsigned long elapsed = now - hipMoveStartMs[i];
+    float progress = (float)elapsed / (float)hipMoveDurationMs[i];
+    if (progress >= 1.0) {
+      applyHipAngle(i, hipMoveTo[i]);
+    } else {
+      applyHipAngle(i, hipMoveFrom[i] + (hipMoveTo[i] - hipMoveFrom[i]) * easeInOut(progress));
+    }
+  }
+
+  unsigned long elapsed = now - kneeFLMoveStartMs;
+  float progress = (float)elapsed / (float)kneeFLMoveDurationMs;
+  if (progress >= 1.0) {
+    applyKneeFLAngle(kneeFLMoveTo);
+  } else {
+    applyKneeFLAngle(kneeFLMoveFrom + (kneeFLMoveTo - kneeFLMoveFrom) * easeInOut(progress));
+  }
 }
 
 // ============================================================
@@ -194,11 +269,20 @@ bool solveLegIK_FL(float x, float y, float &hipAngleOut, float &kneeAngleOut) {
 
 // Moves the FL leg's foot to (x, y) mm relative to the hip pivot.
 // Returns false (leaving the servos untouched) if unreachable.
+// Synchronizes the hip's and knee's move durations so they arrive
+// together -- otherwise whichever joint has the smaller move finishes
+// first and the foot arcs through an unintended path for the rest of
+// the move (each joint still eases independently in angle-space, so
+// this isn't a true straight-line Cartesian path, just a closer
+// approximation than leaving the durations independent).
 bool setFootFL(float x, float y) {
   float hipAngle, kneeAngle;
   if (!solveLegIK_FL(x, y, hipAngle, kneeAngle)) return false;
   setHip(FL, (int)round(hipAngle));
   setKneeFL((int)round(kneeAngle));
+  unsigned long dur = max(hipMoveDurationMs[FL], kneeFLMoveDurationMs);
+  hipMoveDurationMs[FL] = dur;
+  kneeFLMoveDurationMs  = dur;
   return true;
 }
 
@@ -435,9 +519,13 @@ void setup() {
 
   for (int i = 0; i < NUM_HIPS; i++) {
     hipServos[i].attach(HIP_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+    // Pre-set hipPos so the first move is a zero-length ease (instant
+    // snap to home), not a sweep from the uninitialized default of 0.
+    hipPos[i] = HIP_START[i];
     setHip(i, HIP_START[i]);
   }
   kneeFL.attach(KNEE_FL_PIN, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+  kneeFLPos = KNEE_FL_START;
   setKneeFL(KNEE_FL_START);
   Serial.println("Servos OK");
 
@@ -453,6 +541,9 @@ void setup() {
 // LOOP
 // ============================================================
 void loop() {
+  // Step any in-progress eased servo moves forward
+  updateServoMotion();
+
   // Pick up new ToF data as soon as it's ready, independent of the print timer
   pollTofSensors();
 

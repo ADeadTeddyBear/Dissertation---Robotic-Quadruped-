@@ -72,12 +72,11 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, R
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
-// FL re-calibrated with the full leg (hip+knee) assembled: 38 looked
-// straight -> trim +8.
+// FL re-calibrated again: 42 looked straight -> trim +12.
 // FR calibrated: 67 looked straight down -> trim +37.
 // RL calibrated: 43 looked straight down -> trim +13.
 // RR calibrated: 63 looked straight down -> trim +33.
-const int  HIP_TRIM[NUM_HIPS]   = { 8, 37, 13, 33 };
+const int  HIP_TRIM[NUM_HIPS]   = { 12, 37, 13, 33 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 

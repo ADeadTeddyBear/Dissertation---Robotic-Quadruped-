@@ -346,6 +346,29 @@ bool setBodyHeight(float heightMM) {
   return ok;
 }
 
+// Crouches the robot by shifting each leg's hip/knee by `amount`
+// degrees away from their straight-down/straight references, in the
+// asymmetric directions confirmed by testing: front hip increases,
+// front knee decreases, rear hip decreases, rear knee decreases.
+// This is a hand-tuned relationship generalizing the manually-found
+// "start" stance into a single tunable parameter -- it is NOT
+// derived from the 2-link IK (setFoot()/setBodyHeight() move every
+// leg identically, which doesn't reproduce this asymmetric
+// behavior). Each setHip()/setKnee() call still clamps to that
+// leg's own confirmed HIP_MIN/MAX and KNEE_MIN/MAX, so amount will
+// stop having further effect once a leg hits its real limit rather
+// than exceeding it.
+void setCrouch(int amount) {
+  setHip(FL, HIP_START[FL] + amount);
+  setHip(FR, HIP_START[FR] + amount);
+  setKnee(FL, KNEE_START[FL] - amount);
+  setKnee(FR, KNEE_START[FR] - amount);
+  setHip(RL, HIP_START[RL] - amount);
+  setHip(RR, HIP_START[RR] - amount);
+  setKnee(RL, KNEE_START[RL] - amount);
+  setKnee(RR, KNEE_START[RR] - amount);
+}
+
 // ============================================================
 // BODY GEOMETRY (for balance/support-polygon calculations)
 // Body frame: origin at the robot's geometric center, approximating
@@ -696,7 +719,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | lift_fl | lift_fr | lower | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | crouch <amount> | lift_fl | lift_fr | lower | sensors | help");
     Serial.println();
 
   } else if (input == "lift_fl" || input == "lift_fr") {
@@ -726,6 +749,11 @@ void handleCommand(String input) {
     } else {
       Serial.println("Height unreachable for at least one leg.");
     }
+
+  } else if (input.startsWith("crouch ")) {
+    int amount = input.substring(7).toInt();
+    setCrouch(amount);
+    Serial.print("Crouch amount -> "); Serial.println(amount);
 
   } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ")) {
     int legIdx = input.startsWith("foot_fl ") ? FL : FR;

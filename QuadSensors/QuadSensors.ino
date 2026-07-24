@@ -323,6 +323,179 @@ void allHips(int angle) {
 }
 
 // ============================================================
+// BODY GEOMETRY (for balance/support-polygon calculations)
+// Body frame: origin at the robot's geometric center, approximating
+// the center of mass (assumed roughly centered -- the servos are the
+// heaviest components and are distributed fairly evenly across the
+// four corners). x = forward (+), y = left (+).
+//
+// Each leg's IK only moves in its own sagittal plane (no
+// ab/adduction, confirmed earlier), so a planted foot's body-frame Y
+// is always exactly its hip's fixed offset -- only X (fore-aft) can
+// be adjusted to shift the robot's weight.
+// ============================================================
+const float BODY_HALF_LENGTH_MM = 157.5; // half of 315mm front-to-rear hip spacing
+const float BODY_HALF_WIDTH_MM  = 102.5; // half of 205mm left-to-right hip spacing
+const float HIP_OFFSET_X[NUM_HIPS] = {  BODY_HALF_LENGTH_MM,  BODY_HALF_LENGTH_MM, -BODY_HALF_LENGTH_MM, -BODY_HALF_LENGTH_MM }; // FL,FR,RL,RR
+const float HIP_OFFSET_Y[NUM_HIPS] = {  BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM,   BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM };
+
+// Forward kinematics for leg i (the inverse of solveLegIK's math):
+// current foot position relative to its own hip pivot, derived from
+// its current settled hip/knee angles.
+void legForwardKinematics(int i, float &xOut, float &yOut) {
+  float theta1 = radians((float)(hipPos[i] - HIP_START[i]));
+  float theta2 = radians((float)(kneePos[i] - KNEE_START[i]));
+  xOut = LEG_THIGH_MM * sin(theta1) + LEG_CALF_MM * sin(theta1 + theta2);
+  yOut = LEG_THIGH_MM * cos(theta1) + LEG_CALF_MM * cos(theta1 + theta2);
+}
+
+// Leg i's foot position in the body frame (x forward+, y left+).
+void footBodyPosition(int i, float &bx, float &by) {
+  float lx, ly;
+  legForwardKinematics(i, lx, ly);
+  bx = HIP_OFFSET_X[i] + lx;
+  by = HIP_OFFSET_Y[i]; // fixed -- no lateral leg motion
+}
+
+// Standard sign/point-in-triangle test.
+float triSign(float px, float py, float ax, float ay, float bx, float by) {
+  return (px - bx) * (ay - by) - (ax - bx) * (py - by);
+}
+
+bool pointInTriangle(float px, float py,
+                      float ax, float ay, float bx, float by, float cx, float cy) {
+  float d1 = triSign(px, py, ax, ay, bx, by);
+  float d2 = triSign(px, py, bx, by, cx, cy);
+  float d3 = triSign(px, py, cx, cy, ax, ay);
+  bool hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+  bool hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+  return !(hasNeg && hasPos);
+}
+
+// Checks whether the body's center (approximating the center of
+// mass) falls within the support triangle of legs a, b, c, given
+// their current foot positions.
+bool isStableOn(int a, int b, int c) {
+  float ax, ay, bx, by, cx, cy;
+  footBodyPosition(a, ax, ay);
+  footBodyPosition(b, bx, by);
+  footBodyPosition(c, cx, cy);
+  return pointInTriangle(0, 0, ax, ay, bx, by, cx, cy);
+}
+
+// ============================================================
+// LEG LIFT SEQUENCE (front legs only for now)
+// With all four feet at their neutral stance, the geometry above
+// works out to a real finding: lifting one front leg leaves the
+// body's center sitting exactly on the boundary of the remaining
+// 3-leg support triangle -- zero margin, not just "a bit tight". A
+// weight shift before lifting isn't optional here.
+//
+// Since these legs can only move fore-aft (no side-to-side/
+// ab-adduction capability), the shift below is a centroid-alignment
+// heuristic: move the other three feet's local x so the body's
+// center moves toward the centroid of their (new) foot positions.
+// This is a first-pass approach, not an optimal-margin solve, and
+// the isStableOn() check afterward is what actually gates the lift --
+// if the shift didn't achieve real margin, the lift aborts with a
+// message rather than proceeding on the heuristic alone.
+//
+// UNTESTED ON HARDWARE. Watch closely and be ready to catch/support
+// the robot the first several times this runs.
+// ============================================================
+#define LEG_LIFT_MM 30.0 // conservative -- thighs should not fully lift yet
+
+enum LiftState { LIFT_IDLE, LIFT_SHIFTING, LIFT_LIFTING, LIFT_UP, LIFT_LOWERING };
+LiftState liftState = LIFT_IDLE;
+int liftLegIdx = -1;
+int liftStanceIdx[3];
+float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the shift, to restore on lower
+
+bool legMoveDone(int i) {
+  unsigned long now = millis();
+  bool hipDone  = (now - hipMoveStartMs[i]) >= hipMoveDurationMs[i];
+  bool kneeDone = !kneeInstalled[i] || ((now - kneeMoveStartMs[i]) >= kneeMoveDurationMs[i]);
+  return hipDone && kneeDone;
+}
+
+// Starts lifting leg legToLift (FL or FR only). Returns false without
+// doing anything if a lift is already in progress or the leg isn't a
+// front leg. NOTE: if a stance leg's shift turns out to be
+// unreachable partway through, the legs before it in the loop will
+// already have been commanded -- this doesn't roll those back.
+bool startLift(int legToLift) {
+  if (legToLift != FL && legToLift != FR) return false;
+  if (liftState != LIFT_IDLE) return false;
+
+  int n = 0;
+  for (int i = 0; i < NUM_HIPS; i++) {
+    if (i == legToLift) continue;
+    liftStanceIdx[n] = i;
+    legForwardKinematics(i, liftStanceX[n], liftStanceY[n]);
+    n++;
+  }
+
+  float bx[3], by[3];
+  for (int k = 0; k < 3; k++) footBodyPosition(liftStanceIdx[k], bx[k], by[k]);
+  float centroidX = (bx[0] + bx[1] + bx[2]) / 3.0;
+
+  // A planted foot is fixed on the ground -- commanding it "forward"
+  // in body-local terms moves the body backward relative to it, and
+  // vice versa, so shift each stance leg the opposite way to move
+  // the body toward the centroid.
+  for (int k = 0; k < 3; k++) {
+    int i = liftStanceIdx[k];
+    if (!setFoot(i, liftStanceX[k] - centroidX, liftStanceY[k])) return false;
+  }
+
+  liftLegIdx = legToLift;
+  liftState = LIFT_SHIFTING;
+  return true;
+}
+
+// Starts lowering the currently-lifted leg and restoring the shifted
+// stance legs back to their pre-lift positions.
+bool startLower() {
+  if (liftState != LIFT_UP) return false;
+  float lx, ly;
+  legForwardKinematics(liftLegIdx, lx, ly);
+  setFoot(liftLegIdx, lx, ly + LEG_LIFT_MM);
+  for (int k = 0; k < 3; k++) setFoot(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
+  liftState = LIFT_LOWERING;
+  return true;
+}
+
+// Steps the lift/lower sequence forward -- call every loop() pass.
+void updateLiftSequence() {
+  if (liftState == LIFT_SHIFTING) {
+    for (int k = 0; k < 3; k++) if (!legMoveDone(liftStanceIdx[k])) return;
+    if (!isStableOn(liftStanceIdx[0], liftStanceIdx[1], liftStanceIdx[2])) {
+      Serial.println("Lift aborted: center still not inside the support triangle after shifting.");
+      liftState = LIFT_IDLE;
+      liftLegIdx = -1;
+      return;
+    }
+    float lx, ly;
+    legForwardKinematics(liftLegIdx, lx, ly);
+    setFoot(liftLegIdx, lx, ly - LEG_LIFT_MM); // y is down+, so subtract to raise the foot
+    liftState = LIFT_LIFTING;
+
+  } else if (liftState == LIFT_LIFTING) {
+    if (!legMoveDone(liftLegIdx)) return;
+    Serial.println("Leg lifted.");
+    liftState = LIFT_UP;
+
+  } else if (liftState == LIFT_LOWERING) {
+    bool allDone = legMoveDone(liftLegIdx);
+    for (int k = 0; k < 3; k++) allDone = allDone && legMoveDone(liftStanceIdx[k]);
+    if (!allDone) return;
+    Serial.println("Leg lowered, stance restored.");
+    liftState = LIFT_IDLE;
+    liftLegIdx = -1;
+  }
+}
+
+// ============================================================
 // MPU6050 — raw Wire
 // ============================================================
 void setupMPU6050() {
@@ -489,8 +662,23 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | lift_fl | lift_fr | lower | sensors | help");
     Serial.println();
+
+  } else if (input == "lift_fl" || input == "lift_fr") {
+    int legIdx = (input == "lift_fl") ? FL : FR;
+    if (startLift(legIdx)) {
+      Serial.println("Shifting weight before lift...");
+    } else {
+      Serial.println("Cannot start lift (already mid-sequence, or unreachable shift).");
+    }
+
+  } else if (input == "lower") {
+    if (startLower()) {
+      Serial.println("Lowering leg...");
+    } else {
+      Serial.println("No leg currently lifted.");
+    }
 
   } else if (input.startsWith("all ")) {
     int angle = input.substring(4).toInt();
@@ -591,6 +779,9 @@ void setup() {
 void loop() {
   // Step any in-progress eased servo moves forward
   updateServoMotion();
+
+  // Step any in-progress lift/lower sequence forward
+  updateLiftSequence();
 
   // Pick up new ToF data as soon as it's ready, independent of the print timer
   pollTofSensors();

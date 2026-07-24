@@ -327,6 +327,25 @@ void allHips(int angle) {
   for (int i = 0; i < NUM_HIPS; i++) setHip(i, angle);
 }
 
+// Sets every leg's foot directly below its own hip (x=0) at depth
+// heightMM, giving a uniform, level body height computed via IK
+// rather than hand-tuning each leg's hip/knee angles separately.
+// Since all four legs share the same thigh/calf dimensions and the
+// same solveLegIK, this keeps front and rear at the same height by
+// construction.
+//
+// Caveat: this doesn't check the computed angles against each leg's
+// confirmed calibration limits (e.g. KNEE_MIN[RL]/[RR] = 20) before
+// committing -- only the geometric 60-270mm reach is checked. A
+// height that needs more knee bend than a leg's real floor allows
+// will silently clamp there rather than being rejected. Test the
+// height range cautiously, same as every other limit so far.
+bool setBodyHeight(float heightMM) {
+  bool ok = true;
+  for (int i = 0; i < NUM_HIPS; i++) ok = setFoot(i, 0, heightMM) && ok;
+  return ok;
+}
+
 // ============================================================
 // BODY GEOMETRY (for balance/support-polygon calculations)
 // Body frame: origin at the robot's geometric center, approximating
@@ -677,7 +696,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | lift_fl | lift_fr | lower | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | lift_fl | lift_fr | lower | sensors | help");
     Serial.println();
 
   } else if (input == "lift_fl" || input == "lift_fr") {
@@ -699,6 +718,14 @@ void handleCommand(String input) {
     int angle = input.substring(4).toInt();
     allHips(angle);
     Serial.print("All hips -> "); Serial.println(angle);
+
+  } else if (input.startsWith("height ")) {
+    float h = input.substring(7).toFloat();
+    if (setBodyHeight(h)) {
+      Serial.print("Body height -> "); Serial.println(h);
+    } else {
+      Serial.println("Height unreachable for at least one leg.");
+    }
 
   } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ")) {
     int legIdx = input.startsWith("foot_fl ") ? FL : FR;

@@ -112,7 +112,10 @@ int   hipPos[NUM_HIPS];
 // ============================================================
 const int  KNEE_PINS[NUM_HIPS]     = { KNEE_FL_PIN, KNEE_FR_PIN, KNEE_RL_PIN, KNEE_RR_PIN };
 bool       kneeInstalled[NUM_HIPS] = { true, true, true, true };
-const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,   0,   0 };
+// RL/RR confirmed by testing: below 20, the knee/calf touches the
+// ground before the wheel does, so 20 is the floor for lowering the
+// rear stance.
+const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,  20,  20 };
 const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
 // FL/FR re-calibrated again after fixing the under-voltage issue:
 // FL straight at 125, FR straight at 130. RL/RR default to the

@@ -65,11 +65,11 @@ const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_P
 // going lower risks the leg colliding with/damaging the robot. RL/RR
 // confirmed clash-free all the way down to 0.
 const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
-// RL/RR: 170 = leg straight up; capped there (rather than the
-// servo's full 270) so it can't swing past vertical and clash with
-// the top of the robot. FL/FR confirmed by manual cautious jogging
-// (from the low/splayed lift stance) to be safe up to 220.
-const int  HIP_MAX[NUM_HIPS]    = { 220, 220, 170, 170 };
+// FL/FR confirmed by manual cautious jogging (from the low/splayed
+// lift stance) to be safe up to 220. RL/RR confirmed clash-free up
+// to 200 -- the rear doesn't need the same reach as the front since
+// it won't be climbing stairs backwards.
+const int  HIP_MAX[NUM_HIPS]    = { 220, 220, 200, 200 };
 // 30 = leg straight down (the home pose for IK); 0-30 lets the leg swing
 // inward a bit from there, 30-170 covers the rest of its outward/upward travel.
 const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };

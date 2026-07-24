@@ -327,37 +327,69 @@ void allHips(int angle) {
   for (int i = 0; i < NUM_HIPS; i++) setHip(i, angle);
 }
 
-// Sets every leg's foot directly below its own hip (x=0) at depth
-// heightMM, giving a uniform, level body height computed via IK
-// rather than hand-tuning each leg's hip/knee angles separately.
-// Since all four legs share the same thigh/calf dimensions and the
-// same solveLegIK, this keeps front and rear at the same height by
-// construction.
-//
-// Caveat: this doesn't check the computed angles against each leg's
-// confirmed calibration limits (e.g. KNEE_MIN[RL]/[RR] = 20) before
-// committing -- only the geometric 60-270mm reach is checked. A
-// height that needs more knee bend than a leg's real floor allows
-// will silently clamp there rather than being rejected. Test the
-// height range cautiously, same as every other limit so far.
-bool setBodyHeight(float heightMM) {
-  bool ok = true;
-  for (int i = 0; i < NUM_HIPS; i++) ok = setFoot(i, 0, heightMM) && ok;
-  return ok;
+// Solves the "amount" (degrees) that puts the FRONT foot at depth
+// heightMM below its hip, given front hip/knee move by equal and
+// opposite amounts so their rotations exactly cancel
+// (theta1 + theta2 = 0), reducing height to
+// LEG_THIGH_MM*cos(amount) + LEG_CALF_MM.
+float frontAmountForHeight(float heightMM) {
+  float c = (heightMM - LEG_CALF_MM) / LEG_THIGH_MM;
+  c = constrain(c, -1.0, 1.0);
+  return degrees(acos(c));
 }
 
-// Crouches the robot by shifting each leg's hip/knee by `amount`
-// degrees away from their straight-down/straight references, in the
-// asymmetric directions confirmed by testing: front hip increases,
-// front knee decreases, rear hip decreases, rear knee decreases.
-// This is a hand-tuned relationship generalizing the manually-found
-// "start" stance into a single tunable parameter -- it is NOT
-// derived from the 2-link IK (setFoot()/setBodyHeight() move every
-// leg identically, which doesn't reproduce this asymmetric
-// behavior). Each setHip()/setKnee() call still clamps to that
-// leg's own confirmed HIP_MIN/MAX and KNEE_MIN/MAX, so amount will
-// stop having further effect once a leg hits its real limit rather
-// than exceeding it.
+// Solves the "amount" (degrees) that puts the REAR foot at depth
+// heightMM below its hip. Unlike the front, rear hip/knee rotations
+// don't cancel (theta1 + theta2 = -2*amount), so via the double-angle
+// identity height works out to a quadratic in cos(amount):
+// 2*LEG_CALF_MM*u^2 + LEG_THIGH_MM*u - (LEG_CALF_MM + heightMM) = 0.
+// This is why front and rear need different internal amounts to
+// reach the same height -- rear's rotations compound, front's don't.
+float rearAmountForHeight(float heightMM) {
+  float A = 2.0 * LEG_CALF_MM;
+  float B = LEG_THIGH_MM;
+  float C = -(LEG_CALF_MM + heightMM);
+  float disc = B * B - 4.0 * A * C;
+  if (disc < 0) disc = 0;
+  float u = (-B + sqrt(disc)) / (2.0 * A);
+  u = constrain(u, -1.0, 1.0);
+  return degrees(acos(u));
+}
+
+// Sets the body to heightMM, level front-to-back, while preserving
+// the confirmed joint-bend directions (front hip+/knee-, rear
+// hip-/knee-) -- replaces the earlier uniform setFoot(i, 0, height)
+// version, which was level (identical formula for every leg) but
+// made every leg's hip/knee move the SAME direction rather than the
+// asymmetric relationship found by testing.
+//
+// Caveat: heights outside the reachable 60-270mm range clamp the
+// cosine input rather than being rejected, and this doesn't check
+// the computed angles against each leg's confirmed calibration
+// limits (e.g. KNEE_MIN[RL]/[RR] = 20) before committing -- a height
+// needing more bend than a leg's real floor allows will silently
+// clamp there. Test the height range cautiously.
+void setBodyHeight(float heightMM) {
+  float aFront = frontAmountForHeight(heightMM);
+  float bRear  = rearAmountForHeight(heightMM);
+  setHip(FL, (int)round(HIP_START[FL] + aFront));
+  setKnee(FL, (int)round(KNEE_START[FL] - aFront));
+  setHip(FR, (int)round(HIP_START[FR] + aFront));
+  setKnee(FR, (int)round(KNEE_START[FR] - aFront));
+  setHip(RL, (int)round(HIP_START[RL] - bRear));
+  setKnee(RL, (int)round(KNEE_START[RL] - bRear));
+  setHip(RR, (int)round(HIP_START[RR] - bRear));
+  setKnee(RR, (int)round(KNEE_START[RR] - bRear));
+}
+
+// Crouches the robot by shifting each leg's hip/knee by the SAME
+// `amount` degrees away from their straight-down/straight references
+// (unlike setBodyHeight(), which uses different front/rear amounts
+// to stay level). Useful for quick manual exploration; prefer
+// setBodyHeight() for an actual level stance at a given height. Each
+// setHip()/setKnee() call still clamps to that leg's own confirmed
+// HIP_MIN/MAX and KNEE_MIN/MAX, so amount will stop having further
+// effect once a leg hits its real limit rather than exceeding it.
 //
 // amount is clamped to non-negative: straight-down (amount=0, full
 // 270mm-reach extension) is the tallest this stance goes -- it
@@ -749,11 +781,8 @@ void handleCommand(String input) {
 
   } else if (input.startsWith("height ")) {
     float h = input.substring(7).toFloat();
-    if (setBodyHeight(h)) {
-      Serial.print("Body height -> "); Serial.println(h);
-    } else {
-      Serial.println("Height unreachable for at least one leg.");
-    }
+    setBodyHeight(h);
+    Serial.print("Body height -> "); Serial.println(h);
 
   } else if (input.startsWith("crouch ")) {
     int amount = input.substring(7).toInt();

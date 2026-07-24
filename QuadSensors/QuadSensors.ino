@@ -547,6 +547,12 @@ void setup() {
   Serial.println(FIRMWARE_BUILD);
   Serial.println("Booting...");
   Wire.begin();
+  // Without this, a glitched I2C transaction (e.g. electrical noise
+  // from the servos coupling into SDA/SCL) can hang Wire.* calls
+  // forever, freezing the whole sketch -- which looks exactly like
+  // "Serial just stops printing" since loop() never gets back around
+  // to it. This lets a stuck bus time out and auto-recover instead.
+  Wire.setWireTimeout(25000, true); // 25ms timeout, reset bus on timeout
 
   for (int i = 0; i < NUM_HIPS; i++) {
     hipServos[i].attach(HIP_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);

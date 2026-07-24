@@ -65,14 +65,11 @@ const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_P
 // going lower risks the leg colliding with/damaging the robot. RL/RR
 // confirmed clash-free all the way down to 0.
 const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
-// 170 = leg straight up; capped there (rather than the servo's full 270)
-// so it can't swing past vertical and clash with the top of the robot.
-// FL/FR TEMPORARILY raised to the servo's full 270 so the new low/
-// splayed stance's leg-lift can be jogged up manually and cautiously
-// past 170 to find its real safe limit -- this is NOT a confirmed-safe
-// value, just room to test in. Bring it back down to whatever's
-// actually found to be safe once that's known.
-const int  HIP_MAX[NUM_HIPS]    = { 270, 270, 170, 170 };
+// RL/RR: 170 = leg straight up; capped there (rather than the
+// servo's full 270) so it can't swing past vertical and clash with
+// the top of the robot. FL/FR confirmed by manual cautious jogging
+// (from the low/splayed lift stance) to be safe up to 220.
+const int  HIP_MAX[NUM_HIPS]    = { 220, 220, 170, 170 };
 // 30 = leg straight down (the home pose for IK); 0-30 lets the leg swing
 // inward a bit from there, 30-170 covers the rest of its outward/upward travel.
 const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };
@@ -659,8 +656,18 @@ String readCommand() {
 // ============================================================
 void handleCommand(String input) {
   if (input == "start") {
-    allHips(90);
-    Serial.println("All hips -> 90");
+    // Low/splayed stance that keeps the balance polygon satisfied
+    // even with one front leg lifted (unlike the fully-extended
+    // default), found by manual testing. knee_fl/knee_fr are left
+    // at their calibrated straight position -- only the rear knees
+    // needed bending for this stance.
+    setHip(RL, 0);
+    setHip(RR, 0);
+    setKnee(RL, 70);
+    setKnee(RR, 70);
+    setHip(FL, 70);
+    setHip(FR, 70);
+    Serial.println("Start stance applied.");
 
   } else if (input == "sensors") {
     printSensors();

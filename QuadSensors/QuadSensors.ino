@@ -65,11 +65,11 @@ const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_P
 // going lower risks the leg colliding with/damaging the robot. RL/RR
 // confirmed clash-free all the way down to 0.
 const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
-// RL/RR: 170 = leg straight up; capped there (rather than the
-// servo's full 270) so it can't swing past vertical and clash with
-// the top of the robot. FL/FR confirmed by manual cautious jogging
-// (from the low/splayed lift stance) to be safe up to 220.
-const int  HIP_MAX[NUM_HIPS]    = { 220, 220, 170, 170 };
+// FL/FR confirmed by manual cautious jogging (from the low/splayed
+// lift stance) to be safe up to 220. RL/RR confirmed clash-free up
+// to 200 -- the rear doesn't need the same reach as the front since
+// it won't be climbing stairs backwards.
+const int  HIP_MAX[NUM_HIPS]    = { 220, 220, 200, 200 };
 // 30 = leg straight down (the home pose for IK); 0-30 lets the leg swing
 // inward a bit from there, 30-170 covers the rest of its outward/upward travel.
 const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };
@@ -325,6 +325,25 @@ bool setFoot(int i, float x, float y) {
 
 void allHips(int angle) {
   for (int i = 0; i < NUM_HIPS; i++) setHip(i, angle);
+}
+
+// Sets every leg's foot directly below its own hip (x=0) at depth
+// heightMM, giving a uniform, level body height computed via IK
+// rather than hand-tuning each leg's hip/knee angles separately.
+// Since all four legs share the same thigh/calf dimensions and the
+// same solveLegIK, this keeps front and rear at the same height by
+// construction.
+//
+// Caveat: this doesn't check the computed angles against each leg's
+// confirmed calibration limits (e.g. KNEE_MIN[RL]/[RR] = 20) before
+// committing -- only the geometric 60-270mm reach is checked. A
+// height that needs more knee bend than a leg's real floor allows
+// will silently clamp there rather than being rejected. Test the
+// height range cautiously, same as every other limit so far.
+bool setBodyHeight(float heightMM) {
+  bool ok = true;
+  for (int i = 0; i < NUM_HIPS; i++) ok = setFoot(i, 0, heightMM) && ok;
+  return ok;
 }
 
 // ============================================================
@@ -677,7 +696,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | lift_fl | lift_fr | lower | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | lift_fl | lift_fr | lower | sensors | help");
     Serial.println();
 
   } else if (input == "lift_fl" || input == "lift_fr") {
@@ -699,6 +718,14 @@ void handleCommand(String input) {
     int angle = input.substring(4).toInt();
     allHips(angle);
     Serial.print("All hips -> "); Serial.println(angle);
+
+  } else if (input.startsWith("height ")) {
+    float h = input.substring(7).toFloat();
+    if (setBodyHeight(h)) {
+      Serial.print("Body height -> "); Serial.println(h);
+    } else {
+      Serial.println("Height unreachable for at least one leg.");
+    }
 
   } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ")) {
     int legIdx = input.startsWith("foot_fl ") ? FL : FR;

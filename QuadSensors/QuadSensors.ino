@@ -358,7 +358,12 @@ bool setBodyHeight(float heightMM) {
 // leg's own confirmed HIP_MIN/MAX and KNEE_MIN/MAX, so amount will
 // stop having further effect once a leg hits its real limit rather
 // than exceeding it.
+//
+// amount is clamped to non-negative: straight-down (amount=0, full
+// 270mm-reach extension) is the tallest this stance goes -- it
+// should only ever lower from there, never swing the other way.
 void setCrouch(int amount) {
+  amount = max(amount, 0);
   setHip(FL, HIP_START[FL] + amount);
   setHip(FR, HIP_START[FR] + amount);
   setKnee(FL, KNEE_START[FL] - amount);

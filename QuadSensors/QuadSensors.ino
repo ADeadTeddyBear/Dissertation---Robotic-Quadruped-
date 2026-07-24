@@ -605,6 +605,24 @@ void readMPU6050(float &pitch, float &roll) {
   roll  = atan2((float)AcY, sqrt((float)AcX * AcX + (float)AcZ * AcZ)) * 180.0 / PI;
 }
 
+// Reports whether the body is level, using the MPU6050 as ground
+// truth rather than just trusting the leg kinematics. Pitch is
+// front-to-back tilt -- exactly what a front/rear height mismatch
+// (like the one setBodyHeight() was fixed to avoid) would show up as.
+#define LEVEL_TOLERANCE_DEG 3.0
+
+void checkLevel() {
+  float pitch, roll;
+  readMPU6050(pitch, roll);
+  Serial.print("Pitch:"); Serial.print(pitch, 1);
+  Serial.print("  Roll:"); Serial.print(roll, 1);
+  if (fabs(pitch) <= LEVEL_TOLERANCE_DEG && fabs(roll) <= LEVEL_TOLERANCE_DEG) {
+    Serial.println("  -> Level");
+  } else {
+    Serial.println("  -> NOT level");
+  }
+}
+
 // ============================================================
 // VL53L0X SETUP — sensor 2 booted first to avoid address clash
 // ============================================================
@@ -754,9 +772,12 @@ void handleCommand(String input) {
   } else if (input == "sensors") {
     printSensors();
 
+  } else if (input == "level") {
+    checkLevel();
+
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | crouch <amount> | lift_fl | lift_fr | lower | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | crouch <amount> | lift_fl | lift_fr | lower | level | sensors | help");
     Serial.println();
 
   } else if (input == "lift_fl" || input == "lift_fr") {

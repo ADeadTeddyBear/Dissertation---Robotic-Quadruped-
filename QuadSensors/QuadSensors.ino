@@ -542,7 +542,7 @@ void handleCommand(String input) {
 // SETUP
 // ============================================================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(57600); // dropped from 115200 -- was dropping/stalling at the higher rate
   delay(2000);
   Serial.println(FIRMWARE_BUILD);
   Serial.println("Booting...");

@@ -80,13 +80,12 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, true, false }; // FL, FR, RL, R
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
-// FL re-calibrated again: 40 looked straight -> trim +10.
+// FL/RR re-calibrated after fixing an under-voltage issue that was
+// causing unreliable servo behavior on the rear knees: FL 48 straight
+// -> trim +18. RR 40 straight -> trim +10.
 // FR calibrated: 67 looked straight down -> trim +37.
-// RL/RR trims swapped here to match the pin renaming above -- each
-// trim value stayed attached to its actual physical leg (was 35
-// straight -> +5 on the leg now called RR; 60 straight -> +30 on the
-// leg now called RL).
-const int  HIP_TRIM[NUM_HIPS]   = { 10, 37, 30, 5 };
+// RL trim unchanged: 60 straight -> trim +30.
+const int  HIP_TRIM[NUM_HIPS]   = { 18, 37, 30, 10 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 
@@ -112,10 +111,11 @@ const int  KNEE_PINS[NUM_HIPS]     = { KNEE_FL_PIN, KNEE_FR_PIN, KNEE_RL_PIN, KN
 bool       kneeInstalled[NUM_HIPS] = { true, true, true, true };
 const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,   0,   0 };
 const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
-// FL/FR re-calibrated with the full leg (hip+knee) assembled: FL
-// straight at 116, FR straight at 115. RL/RR default to the servo's
-// datasheet neutral (1500us) pending their own by-eye calibration.
-const int  KNEE_START[NUM_HIPS]    = { 116, 115, 135, 135 };
+// FL/FR re-calibrated again after fixing the under-voltage issue:
+// FL straight at 125, FR straight at 130. RL/RR default to the
+// servo's datasheet neutral (1500us) pending their own by-eye
+// calibration, now that voltage is fixed.
+const int  KNEE_START[NUM_HIPS]    = { 125, 130, 135, 135 };
 // Right side knees are mounted opposite, same as the hips -- mirror
 // their angle so the same logical angle bends both sides the same way.
 const bool KNEE_MIRROR[NUM_HIPS]   = { false, true, false, true }; // FL, FR, RL, RR

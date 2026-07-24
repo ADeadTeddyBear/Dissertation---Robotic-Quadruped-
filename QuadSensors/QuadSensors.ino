@@ -57,7 +57,8 @@ enum HipIndex { FL = 0, FR, RL, RR, NUM_HIPS };
 
 const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_PIN };
 // FL/FR are mechanically limited to 6/2 as their furthest inward point --
-// going lower risks the leg colliding with/damaging the robot.
+// going lower risks the leg colliding with/damaging the robot. RL/RR
+// confirmed clash-free all the way down to 0.
 const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
 // 170 = leg straight up; capped there (rather than the servo's full 270)
 // so it can't swing past vertical and clash with the top of the robot.
@@ -72,11 +73,11 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, R
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
-// FL re-calibrated again: 42 looked straight -> trim +12.
+// FL re-calibrated again: 40 looked straight -> trim +10.
 // FR calibrated: 67 looked straight down -> trim +37.
 // RL re-calibrated: 35 looked straight down -> trim +5.
-// RR re-calibrated: 30 looked straight down -> trim 0.
-const int  HIP_TRIM[NUM_HIPS]   = { 12, 37, 5, 0 };
+// RR re-calibrated again: 60 looked straight down -> trim +30.
+const int  HIP_TRIM[NUM_HIPS]   = { 10, 37, 5, 30 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 
@@ -541,7 +542,7 @@ void handleCommand(String input) {
 // SETUP
 // ============================================================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(57600); // dropped from 115200 -- was dropping/stalling at the higher rate
   delay(2000);
   Serial.println(FIRMWARE_BUILD);
   Serial.println("Booting...");

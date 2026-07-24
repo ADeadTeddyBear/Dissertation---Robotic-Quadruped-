@@ -23,8 +23,13 @@
 // ============================================================
 #define HIP_FL_PIN   6
 #define HIP_FR_PIN   5
-#define HIP_RL_PIN   7
-#define HIP_RR_PIN   8
+// RL/RR pin numbers were swapped here (8/7, not 7/8) to correct a
+// naming mixup: what the code called "RL" was actually wired to the
+// physical right-rear leg and vice versa. Direction/mirroring was
+// already correct for each physical leg, so the fix is just naming --
+// the calibration below (mirror, trim) moved together with its pin.
+#define HIP_RL_PIN   8
+#define HIP_RR_PIN   7
 
 // ============================================================
 // KNEE SERVO PINS
@@ -67,17 +72,21 @@ const int  HIP_MAX[NUM_HIPS]    = { 170, 170, 170, 170 };
 // inward a bit from there, 30-170 covers the rest of its outward/upward travel.
 const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };
 // Right side servos are mounted opposite — mirror their angle so
-// sending 30 to FL and FR both means "straight down"
-const bool HIP_MIRROR[NUM_HIPS] = { false, true, false, true }; // FL, FR, RL, RR
+// sending 30 to FL and FR both means "straight down". RL/RR swapped
+// here to match the pin renaming above -- each mirror value stayed
+// attached to its actual physical leg.
+const bool HIP_MIRROR[NUM_HIPS] = { false, true, true, false }; // FL, FR, RL, RR
 // Per-servo calibration: added before mirroring so commanding the same
 // logical angle (e.g. 30) points every leg straight down, regardless of
 // how each servo horn happens to be seated. Fill in from the by-eye
 // calibration: trim = (angle that looked straight down) - 30.
 // FL re-calibrated again: 40 looked straight -> trim +10.
 // FR calibrated: 67 looked straight down -> trim +37.
-// RL re-calibrated: 35 looked straight down -> trim +5.
-// RR re-calibrated again: 60 looked straight down -> trim +30.
-const int  HIP_TRIM[NUM_HIPS]   = { 10, 37, 5, 30 };
+// RL/RR trims swapped here to match the pin renaming above -- each
+// trim value stayed attached to its actual physical leg (was 35
+// straight -> +5 on the leg now called RR; 60 straight -> +30 on the
+// leg now called RL).
+const int  HIP_TRIM[NUM_HIPS]   = { 10, 37, 30, 5 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 
@@ -95,13 +104,12 @@ int   hipPos[NUM_HIPS];
 // ============================================================
 // KNEE CONFIG
 // Same servo model as the hips (500-2500us, 270 degrees), so the
-// same pulse mapping applies. FL/FR are wired; RL/RR are reserved
-// placeholders until those legs are physically added -- kneeInstalled
-// gates setup()/updateServoMotion() so an uninstalled knee is never
-// attached or driven.
+// same pulse mapping applies. All four legs now wired; kneeInstalled
+// still gates setup()/updateServoMotion() as a safety net in case a
+// knee ever needs to be temporarily pulled back out.
 // ============================================================
 const int  KNEE_PINS[NUM_HIPS]     = { KNEE_FL_PIN, KNEE_FR_PIN, KNEE_RL_PIN, KNEE_RR_PIN };
-bool       kneeInstalled[NUM_HIPS] = { true, true, false, false };
+bool       kneeInstalled[NUM_HIPS] = { true, true, true, true };
 const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,   0,   0 };
 const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
 // FL/FR re-calibrated with the full leg (hip+knee) assembled: FL

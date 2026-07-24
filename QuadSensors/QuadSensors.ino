@@ -67,7 +67,12 @@ const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_P
 const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
 // 170 = leg straight up; capped there (rather than the servo's full 270)
 // so it can't swing past vertical and clash with the top of the robot.
-const int  HIP_MAX[NUM_HIPS]    = { 170, 170, 170, 170 };
+// FL/FR TEMPORARILY raised to the servo's full 270 so the new low/
+// splayed stance's leg-lift can be jogged up manually and cautiously
+// past 170 to find its real safe limit -- this is NOT a confirmed-safe
+// value, just room to test in. Bring it back down to whatever's
+// actually found to be safe once that's known.
+const int  HIP_MAX[NUM_HIPS]    = { 270, 270, 170, 170 };
 // 30 = leg straight down (the home pose for IK); 0-30 lets the leg swing
 // inward a bit from there, 30-170 covers the rest of its outward/upward travel.
 const int  HIP_START[NUM_HIPS]  = { 30, 30, 30, 30 };

@@ -379,11 +379,6 @@ float rearAmountForHeight(float heightMM) {
   return degrees(acos(u));
 }
 
-// Per-leg correction added to each leg's hip target, in degrees.
-// Adjusted by updateBalance() below when self-balancing is enabled;
-// stays at 0 (no effect) otherwise.
-float legBalanceTrim[NUM_HIPS] = {0, 0, 0, 0};
-
 // Sets the body to heightMM, level front-to-back, while preserving
 // the confirmed joint-bend directions (front hip+/knee-, rear
 // hip-/knee-) -- replaces the earlier uniform setFoot(i, 0, height)
@@ -403,15 +398,21 @@ void setBodyHeight(float heightMM) {
   lastCommandedHeight = heightMM;
   float aFront = frontAmountForHeight(heightMM);
   float bRear  = rearAmountForHeight(heightMM);
-  setHip(FL, (int)round(HIP_START[FL] + aFront + legBalanceTrim[FL]));
+  setHip(FL, (int)round(HIP_START[FL] + aFront));
   setKnee(FL, (int)round(KNEE_START[FL] - aFront));
-  setHip(FR, (int)round(HIP_START[FR] + aFront + legBalanceTrim[FR]));
+  setHip(FR, (int)round(HIP_START[FR] + aFront));
   setKnee(FR, (int)round(KNEE_START[FR] - aFront));
-  setHip(RL, (int)round(HIP_START[RL] - bRear + legBalanceTrim[RL]));
+  setHip(RL, (int)round(HIP_START[RL] - bRear));
   setKnee(RL, (int)round(KNEE_START[RL] - bRear));
-  setHip(RR, (int)round(HIP_START[RR] - bRear + legBalanceTrim[RR]));
+  setHip(RR, (int)round(HIP_START[RR] - bRear));
   setKnee(RR, (int)round(KNEE_START[RR] - bRear));
 }
+
+// Per-leg height correction (mm, relative to lastCommandedHeight)
+// currently applied by updateBalance() below when self-balancing is
+// enabled; stays at 0 (no effect) otherwise. Kept only for
+// diagnostics -- updateBalance() recomputes it fresh every tick.
+float legHeightCorrection[NUM_HIPS] = {0, 0, 0, 0};
 
 // Crouches the robot by shifting each leg's hip/knee by the SAME
 // `amount` degrees away from their straight-down/straight references
@@ -438,51 +439,6 @@ void setCrouch(int amount) {
 }
 
 // ============================================================
-// SELF-BALANCING (closed-loop pitch/roll correction)
-// Nudges each leg's hip target to correct measured tilt from the
-// MPU6050, re-applied on a timer independent of whether a height
-// change is actively in progress or already settled -- so a
-// transition (e.g. crouched -> standing) gets corrected throughout
-// the move, not just checked at the end. Only affects setBodyHeight()
-// (the properly symmetric IK-based control) -- crouch() is the
-// simpler manual tool and isn't corrected here.
-//
-// UNTESTED: this is a first-pass proportional controller. The
-// correction directions below are a best-reasoned guess from the
-// reported convention (positive pitch = front leaning forward,
-// positive roll = tilting right), not something verified on
-// hardware. If tilt gets WORSE over time instead of settling toward
-// zero, that means a term's sign needs flipping, not a redesign --
-// disable with "balance off" immediately if that happens.
-// ============================================================
-bool balanceEnabled = false;
-
-#define BALANCE_INTERVAL_MS 200
-#define BALANCE_KP 0.3        // degrees of trim adjustment per degree of tilt error, per tick -- conservative starting point
-#define BALANCE_MAX_TRIM 15.0 // safety clamp on total accumulated correction
-
-unsigned long lastBalanceMs = 0;
-
-void updateBalance() {
-  if (!balanceEnabled) return;
-  if (millis() - lastBalanceMs < BALANCE_INTERVAL_MS) return;
-  lastBalanceMs = millis();
-
-  float pitch, roll;
-  readMPU6050(pitch, roll);
-
-  float dPitch = constrain(pitch * BALANCE_KP, -2.0, 2.0);
-  float dRoll  = constrain(roll  * BALANCE_KP, -2.0, 2.0);
-
-  legBalanceTrim[FL] = constrain(legBalanceTrim[FL] - dPitch - dRoll, -BALANCE_MAX_TRIM, BALANCE_MAX_TRIM);
-  legBalanceTrim[FR] = constrain(legBalanceTrim[FR] - dPitch + dRoll, -BALANCE_MAX_TRIM, BALANCE_MAX_TRIM);
-  legBalanceTrim[RL] = constrain(legBalanceTrim[RL] + dPitch - dRoll, -BALANCE_MAX_TRIM, BALANCE_MAX_TRIM);
-  legBalanceTrim[RR] = constrain(legBalanceTrim[RR] + dPitch + dRoll, -BALANCE_MAX_TRIM, BALANCE_MAX_TRIM);
-
-  setBodyHeight(lastCommandedHeight); // re-apply current height with the updated trims
-}
-
-// ============================================================
 // BODY GEOMETRY (for balance/support-polygon calculations)
 // Body frame: origin at the robot's geometric center, approximating
 // the center of mass (assumed roughly centered -- the servos are the
@@ -498,6 +454,70 @@ const float BODY_HALF_LENGTH_MM = 157.5; // half of 315mm front-to-rear hip spac
 const float BODY_HALF_WIDTH_MM  = 102.5; // half of 205mm left-to-right hip spacing
 const float HIP_OFFSET_X[NUM_HIPS] = {  BODY_HALF_LENGTH_MM,  BODY_HALF_LENGTH_MM, -BODY_HALF_LENGTH_MM, -BODY_HALF_LENGTH_MM }; // FL,FR,RL,RR
 const float HIP_OFFSET_Y[NUM_HIPS] = {  BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM,   BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM };
+
+// ============================================================
+// SELF-BALANCING (closed-loop pitch/roll correction via IK)
+// Re-levels the body by computing, per leg, how much that leg's
+// stance HEIGHT needs to change to cancel the measured tilt, rather
+// than nudging a raw hip-angle trim as before. Keeping all four feet
+// planted while the body tilts by pitch/roll means each leg's height
+// must shift by (that leg's distance from the body center along the
+// tilt axis) * tan(tilt angle) -- the same plane-projection already
+// used by footBodyPosition()/HIP_OFFSET_X/Y for the support-polygon
+// check, just applied to height instead of position. The corrected
+// height is then run back through frontAmountForHeight()/
+// rearAmountForHeight() -- the same IK setBodyHeight() itself uses --
+// so each leg still moves along its own confirmed hip/knee bend
+// direction instead of an arbitrary angle offset.
+//
+// Re-applied on a timer independent of whether a height change is
+// actively in progress or already settled -- so a transition (e.g.
+// crouched -> standing) gets corrected throughout the move, not just
+// checked at the end. Only affects setBodyHeight()'s stance --
+// crouch() is the simpler manual tool and isn't corrected here.
+//
+// UNTESTED: the correction directions are a best-reasoned guess from
+// the reported convention (positive pitch = front leaning forward,
+// positive roll = tilting right), not something verified on
+// hardware. If tilt gets WORSE over time instead of settling toward
+// zero, that means a term's sign needs flipping, not a redesign --
+// disable with "balance off" immediately if that happens.
+// ============================================================
+bool balanceEnabled = false;
+
+#define BALANCE_INTERVAL_MS 200
+#define BALANCE_GAIN 0.5             // fraction of the full geometric correction applied per tick -- conservative starting point
+#define BALANCE_MAX_CORRECTION_MM 30 // safety clamp on how far any single leg's height can be pulled from lastCommandedHeight
+
+unsigned long lastBalanceMs = 0;
+
+void updateBalance() {
+  if (!balanceEnabled) return;
+  if (millis() - lastBalanceMs < BALANCE_INTERVAL_MS) return;
+  lastBalanceMs = millis();
+
+  float pitch, roll;
+  readMPU6050(pitch, roll);
+  float tanPitch = tan(radians(pitch));
+  float tanRoll  = tan(radians(roll));
+
+  for (int i = 0; i < NUM_HIPS; i++) {
+    float correction = BALANCE_GAIN * (HIP_OFFSET_X[i] * tanPitch - HIP_OFFSET_Y[i] * tanRoll);
+    correction = constrain(correction, -BALANCE_MAX_CORRECTION_MM, BALANCE_MAX_CORRECTION_MM);
+    legHeightCorrection[i] = correction;
+    float correctedHeight = lastCommandedHeight + correction;
+
+    if (i == FL || i == FR) {
+      float amount = frontAmountForHeight(correctedHeight);
+      setHip(i, (int)round(HIP_START[i] + amount));
+      setKnee(i, (int)round(KNEE_START[i] - amount));
+    } else {
+      float amount = rearAmountForHeight(correctedHeight);
+      setHip(i, (int)round(HIP_START[i] - amount));
+      setKnee(i, (int)round(KNEE_START[i] - amount));
+    }
+  }
+}
 
 // Forward kinematics for leg i (the inverse of solveLegIK's math):
 // current foot position relative to its own hip pivot, derived from
@@ -857,8 +877,9 @@ void handleCommand(String input) {
 
   } else if (input == "balance off") {
     balanceEnabled = false;
-    for (int i = 0; i < NUM_HIPS; i++) legBalanceTrim[i] = 0;
-    Serial.println("Self-balancing disabled, trims reset.");
+    for (int i = 0; i < NUM_HIPS; i++) legHeightCorrection[i] = 0;
+    setBodyHeight(lastCommandedHeight); // return to the uncorrected, uniform height
+    Serial.println("Self-balancing disabled, corrections reset.");
 
   } else if (input == "help") {
     Serial.println();

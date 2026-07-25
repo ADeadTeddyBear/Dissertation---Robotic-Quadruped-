@@ -142,7 +142,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensors build 2026-07-25-j (VL53L0X)"
+#define FIRMWARE_BUILD "QuadSensors build 2026-07-25-k (VL53L0X)"
 
 // ============================================================
 // SERVO HELPERS
@@ -538,75 +538,88 @@ bool startStandMove(float targetProgress) {
 }
 
 // ============================================================
-// STAND SWEEP (diagnostic: pitch/roll/ToF across the crouch<->stand range)
-// Steps through SWEEP_CHECKPOINTS via startStandMove(), pausing
-// SWEEP_SETTLE_MS at each stop to let the servos/chassis stop moving
-// before reading sensors, then prints pitch/roll (ground truth from
-// the MPU6050 -- the leg forward-kinematics formula elsewhere in this
-// file gives nonsense results in this crouch's extreme-angle region,
-// e.g. a NEGATIVE computed height for the rear legs at progress=0, so
-// it can't be trusted here) plus both ToF readings (forward-facing,
-// roughly level with the hip pivot) at each checkpoint.
+// STAND SWEEP (continuous scan: report ToF1 only when it jumps)
+// Earlier version stopped at 5 checkpoints (0/25/50/75/100%) and
+// printed every one -- confirmed pitch/roll stay level across the
+// whole range (so that question is settled), but a step edge showed
+// up as a smooth-looking climb across those coarse stops rather than
+// a clean jump, because 5 stops 25% apart is too coarse and each one
+// paused for 1.5s doing nothing.
 //
-// This is step 1 toward reading a step's height from a ToF sweep:
-// first confirm, from the real robot, whether "level" actually holds
-// across the whole stand range or only at the two endpoints.
+// This version instead moves in FINE_STEP_FRACTION (1%) steps with no
+// pause, taking a fresh ToF1 reading after every step (the sensor's
+// own continuous-ranging cycle is ~100ms, matching
+// FINE_STEP_INTERVAL_MS, so each step should have a genuinely new
+// sample) -- smooth, continuous motion instead of coarse stop-and-go.
+// Only prints when ToF1 changes by more than STEP_CHANGE_THRESHOLD_MM
+// from the previous step's reading, or when it flips between reading
+// a target and reading none -- i.e. only at a real discontinuity, not
+// every sample. Each print includes the stand percentage at that
+// moment as the "height" -- there's no mm calibration yet (that's a
+// later piece), but percentage is enough to locate roughly where a
+// jump happens.
 // ============================================================
-const float SWEEP_CHECKPOINTS[] = {0.0, 0.25, 0.5, 0.75, 1.0};
-#define SWEEP_NUM_CHECKPOINTS 5
-#define SWEEP_SETTLE_MS 1500 // time to let vibration/motion settle before reading sensors
+#define FINE_STEP_FRACTION 0.01 // 1% per step -- fine enough to localize a jump, unlike the old 25%-apart checkpoints
+#define FINE_STEP_INTERVAL_MS 100 // matches the ToF's own ~100ms continuous-ranging cycle
+#define STEP_CHANGE_THRESHOLD_MM 100 // ToF1 delta between consecutive steps worth reporting
 
-bool sweepInProgress = false;
-bool sweepSettling = false;
-int sweepIndex = -1;
-unsigned long sweepSettleStartMs = 0;
+enum ScanState { SCAN_IDLE, SCAN_TO_START, SCAN_STEPPING };
+ScanState scanState = SCAN_IDLE;
+unsigned long lastScanStepMs = 0;
+uint16_t lastScanToF1 = 0;
+bool lastScanToF1Ok = false;
 
-// Starts the sweep from checkpoint 0. Returns false if a sweep or a
+// Starts the scan: goes to 0% first (if not already there), then
+// steps up to 100% in fine increments. Returns false if a scan or a
 // manual stand move is already in progress.
-bool startStandSweep() {
-  if (sweepInProgress || standMoveInProgress) return false;
-  sweepInProgress = true;
-  sweepSettling = false;
-  sweepIndex = 0;
-  startStandMove(SWEEP_CHECKPOINTS[0]);
+bool startStepScan() {
+  if (scanState != SCAN_IDLE || standMoveInProgress) return false;
+  scanState = SCAN_TO_START;
+  startStandMove(0.0); // no-op if already at 0%; SCAN_TO_START handles either case
   return true;
 }
 
-void printSweepCheckpoint() {
-  float pitch, roll;
-  readMPU6050(pitch, roll);
-  Serial.print("Sweep "); Serial.print((int)round(SWEEP_CHECKPOINTS[sweepIndex] * 100)); Serial.print("%");
-  Serial.print("  Pitch:"); Serial.print(pitch, 1);
-  Serial.print("  Roll:"); Serial.print(roll, 1);
-  Serial.print("  ToF1:");
-  if (tof1Active && tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
-  Serial.print("  ToF2:");
-  if (tof2Active && tof2_ok) { Serial.print(tof2_mm); Serial.print("mm"); } else { Serial.print("---"); }
+void printScanChange() {
+  Serial.print("ToF1 jump at "); Serial.print((int)round(standProgress * 100)); Serial.print("%: ");
+  if (lastScanToF1Ok) { Serial.print(lastScanToF1); Serial.print("mm"); } else { Serial.print("---"); }
+  Serial.print(" -> ");
+  if (tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
   Serial.println();
 }
 
-// Steps the sweep forward -- call every loop() pass.
-void updateStandSweep() {
-  if (!sweepInProgress) return;
-  if (standMoveInProgress) return; // still moving to this checkpoint
+// Steps the scan forward -- call every loop() pass.
+void updateStepScan() {
+  if (scanState == SCAN_IDLE) return;
 
-  if (!sweepSettling) {
-    sweepSettling = true;
-    sweepSettleStartMs = millis();
+  if (scanState == SCAN_TO_START) {
+    if (standMoveInProgress) return; // still moving to 0%
+    lastScanToF1 = tof1_mm;
+    lastScanToF1Ok = tof1_ok;
+    lastScanStepMs = millis();
+    scanState = SCAN_STEPPING;
     return;
   }
-  if (millis() - sweepSettleStartMs < SWEEP_SETTLE_MS) return;
 
-  printSweepCheckpoint();
+  // SCAN_STEPPING
+  if (millis() - lastScanStepMs < FINE_STEP_INTERVAL_MS) return;
+  lastScanStepMs = millis();
 
-  sweepIndex++;
-  if (sweepIndex >= SWEEP_NUM_CHECKPOINTS) {
-    sweepInProgress = false;
-    Serial.println("Sweep complete.");
+  bool changed = false;
+  if (tof1_ok && lastScanToF1Ok) {
+    changed = abs((int)tof1_mm - (int)lastScanToF1) >= STEP_CHANGE_THRESHOLD_MM;
+  } else if (tof1_ok != lastScanToF1Ok) {
+    changed = true; // target appeared or disappeared -- e.g. cleared a step with nothing behind it
+  }
+  if (changed) printScanChange();
+  lastScanToF1 = tof1_mm;
+  lastScanToF1Ok = tof1_ok;
+
+  if (standProgress >= 1.0) {
+    scanState = SCAN_IDLE;
+    Serial.println("Scan complete.");
     return;
   }
-  sweepSettling = false;
-  startStandMove(SWEEP_CHECKPOINTS[sweepIndex]);
+  applyStandProgress(standProgress + FINE_STEP_FRACTION);
 }
 
 // ============================================================
@@ -1061,10 +1074,10 @@ void handleCommand(String input) {
     Serial.println();
 
   } else if (input == "stand_sweep") {
-    if (startStandSweep()) {
-      Serial.println("Sweeping 0/25/50/75/100%...");
+    if (startStepScan()) {
+      Serial.println("Scanning 0->100%, will report ToF1 only on a large jump...");
     } else {
-      Serial.println("Cannot start sweep (already sweeping, or a stand move is already in progress).");
+      Serial.println("Cannot start scan (already scanning, or a stand move is already in progress).");
     }
 
   } else if (input == "stand") {
@@ -1224,7 +1237,7 @@ void loop() {
   updateStand();
 
   // Step any in-progress stand sweep forward
-  updateStandSweep();
+  updateStepScan();
 
   // Nudge toward level if self-balancing is enabled
   updateBalance();

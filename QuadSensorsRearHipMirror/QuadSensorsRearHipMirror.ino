@@ -543,6 +543,78 @@ const float HIP_OFFSET_X[NUM_HIPS] = {  BODY_HALF_LENGTH_MM,  BODY_HALF_LENGTH_M
 const float HIP_OFFSET_Y[NUM_HIPS] = {  BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM,   BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM };
 
 // ============================================================
+// READY STANCE (support-margin-safe default foot offset)
+// The default "foot directly under hip" stance (x=0) leaves the body's
+// center sitting exactly on the boundary of the support triangle the
+// instant a front leg lifts (see the LEG LIFT SEQUENCE comment below)
+// -- zero margin, not just tight. startLift() reactively shifts the
+// other three feet by (their position - centroid) to fix this per-lift,
+// but by this robot's left-right symmetry that shift works out to the
+// SAME value regardless of which front leg is about to lift, so it can
+// be baked into the default stance instead of computed on demand.
+//
+// Derivation: with either front leg's contribution removed, the
+// remaining triangle's tightest edge is the diagonal to the other
+// front leg, and shifting every stance foot forward by
+// (BODY_HALF_LENGTH_MM / 3) exactly cancels that triangle's centroid
+// offset in X -- independent of BODY_HALF_WIDTH_MM, and identical to
+// what startLift() already computes reactively for whichever leg it's
+// asked to lift. At this robot's geometry that's ~52.5mm forward,
+// leaving the center ~28.6mm inside the support triangle either way
+// (checked with a standalone model, not on hardware).
+// ============================================================
+const float LIFT_READY_SHIFT_MM = BODY_HALF_LENGTH_MM / 3.0;
+
+// Computes leg i's hip/knee for an arbitrary foot target (x, y) via the
+// general two-link solveLegIK(), and validates BOTH against that leg's
+// real HIP_MIN/MAX and KNEE_MIN/MAX before returning -- the same
+// validate-before-commit pattern as computeFrontJointsForHeight()/
+// computeRearJointsForHeight(), so this can't silently let setHip()/
+// setKnee() clamp just one of the pair the way setBodyHeight() used to
+// before it was fixed.
+bool computeJointsForFoot(int i, float x, float y, int &hipOut, int &kneeOut) {
+  float hipAngle, kneeAngle;
+  if (!solveLegIK(i, x, y, hipAngle, kneeAngle)) return false;
+  int hip  = (int)round(hipAngle);
+  int knee = (int)round(kneeAngle);
+  if (hip < HIP_MIN[i] || hip > HIP_MAX[i] || knee < KNEE_MIN[i] || knee > KNEE_MAX[i]) return false;
+  hipOut = hip;
+  kneeOut = knee;
+  return true;
+}
+
+// Sets all four legs to heightMM with LIFT_READY_SHIFT_MM of forward
+// foot offset baked in -- the margin-safe alternative to
+// setBodyHeight() for whenever a front-leg lift might follow.
+// Validates all four legs before moving anything, exactly like
+// setBodyHeight(), so one out-of-range leg rejects the whole command
+// instead of leaving the stance lopsided.
+//
+// UNTESTED ON HARDWARE: routes through the general setFoot()/
+// solveLegIK() path (unlike setBodyHeight()'s specialized single-
+// parameter formula, which has no free x term to offset), and per the
+// SAFETY note above solveLegIK(), chassis clearance for a bent leg has
+// only been confirmed for FL. Also only reachable over a limited height
+// band at this offset -- roughly 150-260mm at this robot's geometry;
+// lower needs more knee bend than KNEE_MIN/MAX allow once the forward
+// offset is added, higher exceeds the leg's max reach. Jog into it
+// slowly and watch for chassis contact, same caution as foot_rl/foot_rr.
+bool setReadyStance(float heightMM) {
+  int hip[NUM_HIPS], knee[NUM_HIPS];
+  bool ok = true;
+  for (int i = 0; i < NUM_HIPS; i++) {
+    ok = computeJointsForFoot(i, LIFT_READY_SHIFT_MM, heightMM, hip[i], knee[i]) && ok;
+  }
+  if (!ok) return false;
+
+  for (int i = 0; i < NUM_HIPS; i++) {
+    setHip(i, hip[i]);
+    setKnee(i, knee[i]);
+  }
+  return true;
+}
+
+// ============================================================
 // SELF-BALANCING (closed-loop pitch/roll correction via IK)
 // Re-levels the body by computing, per leg, how much that leg's
 // stance HEIGHT needs to change to cancel the measured tilt, rather
@@ -672,6 +744,13 @@ bool isStableOn(int a, int b, int c) {
 //
 // UNTESTED ON HARDWARE. Watch closely and be ready to catch/support
 // the robot the first several times this runs.
+//
+// If the stance was already set via setReadyStance()/the "ready <mm>"
+// command instead of setBodyHeight()/"height <mm>", the shift below
+// finds the feet already close to where it would have moved them
+// anyway (see the READY STANCE comment above), so it should have
+// little or nothing left to do -- but it still runs and still gates
+// on isStableOn(), so it's not required to switch commands first.
 // ============================================================
 #define LEG_LIFT_MM 30.0 // conservative -- thighs should not fully lift yet
 
@@ -973,7 +1052,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | height <mm> | crouch <amount> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | height <mm> | ready <mm> | crouch <amount> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "lift_fl" || input == "lift_fr") {
@@ -1002,6 +1081,14 @@ void handleCommand(String input) {
       Serial.print("Body height -> "); Serial.println(h);
     } else {
       Serial.println("Height unreachable while staying level -- at least one leg's hip or knee would need to pass its real limit.");
+    }
+
+  } else if (input.startsWith("ready ")) {
+    float h = input.substring(6).toFloat();
+    if (setReadyStance(h)) {
+      Serial.print("Ready stance -> "); Serial.println(h);
+    } else {
+      Serial.println("Ready stance unreachable at that height -- at least one leg's hip or knee would need to pass its real limit with the forward offset applied.");
     }
 
   } else if (input.startsWith("crouch ")) {

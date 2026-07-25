@@ -148,7 +148,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-h (VL53L0X)"
+#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-i (VL53L0X)"
 
 // ============================================================
 // SERVO HELPERS
@@ -615,11 +615,14 @@ bool startStandMove(float targetProgress) {
 #define FINE_STEP_INTERVAL_MS 100 // matches the ToF's own ~100ms continuous-ranging cycle
 #define STEP_CHANGE_THRESHOLD_MM 100 // ToF1 delta between consecutive steps worth reporting
 
+#define SCAN_REPORT_STEP_PERCENT 10 // heartbeat trace interval -- see note below
+
 enum ScanState { SCAN_IDLE, SCAN_TO_START, SCAN_STEPPING };
 ScanState scanState = SCAN_IDLE;
 unsigned long lastScanStepMs = 0;
 uint16_t lastScanToF1 = 0;
 bool lastScanToF1Ok = false;
+int nextScanReportPercent = 0;
 
 // Starts the scan: goes to 0% first (if not already there), then
 // steps up to 100% in fine increments. Returns false if a scan or a
@@ -648,6 +651,7 @@ void updateStepScan() {
     lastScanToF1 = tof1_mm;
     lastScanToF1Ok = tof1_ok;
     lastScanStepMs = millis();
+    nextScanReportPercent = 0;
     scanState = SCAN_STEPPING;
     return;
   }
@@ -665,6 +669,21 @@ void updateStepScan() {
   if (changed) printScanChange();
   lastScanToF1 = tof1_mm;
   lastScanToF1Ok = tof1_ok;
+
+  // Heartbeat trace every SCAN_REPORT_STEP_PERCENT -- a scan that never
+  // crosses STEP_CHANGE_THRESHOLD_MM prints NOTHING otherwise (which is
+  // exactly what happened testing against the toolbox: no single 1%
+  // step ever jumped 100mm, so the scan looked like it "didn't work"
+  // even though it ran correctly and just never saw a discontinuity
+  // that sharp). This gives visible confirmation the scan is actually
+  // running and collecting readings, and shows the real trend even
+  // when no single step counts as a "jump".
+  int curPercent = (int)round(standProgress * 100);
+  if (curPercent >= nextScanReportPercent) {
+    Serial.print(curPercent); Serial.print("%: ToF1=");
+    if (tof1_ok) { Serial.print(tof1_mm); Serial.println("mm"); } else { Serial.println("---"); }
+    nextScanReportPercent += SCAN_REPORT_STEP_PERCENT;
+  }
 
   if (standProgress >= 1.0) {
     scanState = SCAN_IDLE;

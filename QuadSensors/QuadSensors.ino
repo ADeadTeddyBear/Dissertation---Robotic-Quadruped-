@@ -142,7 +142,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensors build 2026-07-25-f (VL53L0X)"
+#define FIRMWARE_BUILD "QuadSensors build 2026-07-25-g (VL53L0X)"
 
 // ============================================================
 // TIMING
@@ -449,53 +449,31 @@ bool setBodyHeight(float heightMM) {
 // diagnostics -- updateBalance() recomputes it fresh every tick.
 float legHeightCorrection[NUM_HIPS] = {0, 0, 0, 0};
 
-// Crouches the robot by shifting each leg's hip/knee by the SAME
-// `amount` degrees away from their straight-down/straight references
-// (unlike setBodyHeight(), which uses different front/rear amounts
-// to stay level). Useful for quick manual exploration; prefer
-// setBodyHeight() for an actual level stance at a given height. Each
-// setHip()/setKnee() call still clamps to that leg's own confirmed
-// HIP_MIN/MAX and KNEE_MIN/MAX, so amount will stop having further
-// effect once a leg hits its real limit rather than exceeding it.
-//
-// amount is clamped to non-negative: straight-down (amount=0, full
-// 270mm-reach extension) is the tallest this stance goes -- it
-// should only ever lower from there, never swing the other way.
-void setCrouch(int amount) {
-  amount = max(amount, 0);
-  setHip(FL, HIP_START[FL] + amount);
-  setHip(FR, HIP_START[FR] + amount);
-  setKnee(FL, KNEE_START[FL] - amount);
-  setKnee(FR, KNEE_START[FR] - amount);
-  setHip(RL, HIP_START[RL] - amount);
-  setHip(RR, HIP_START[RR] - amount);
-  setKnee(RL, KNEE_START[RL] - amount);
-  setKnee(RR, KNEE_START[RR] - amount);
-}
-
 // ============================================================
-// STAND-UP SEQUENCE (confirmed-low crouch -> full standing)
-// CROUCH_LOW_HIP/KNEE are NOT derived from the height formulas above --
-// they're the exact angles found by hand-jogging the robot to its
-// lowest stance that still reads level (confirmed directly on
-// hardware), which sits lower than computeFrontJointsForHeight()/
-// computeRearJointsForHeight() allow (~193mm) because it uses a
-// different joint relationship than setBodyHeight()'s: every hip
-// rotates the SAME direction from HIP_START (unlike setCrouch()'s
-// rear hip-/knee-, or setBodyHeight()'s split front/rear formulas),
-// while the knees split by front (toward the chassis) and rear (away
-// from it).
+// STAND SEQUENCE (confirmed-low crouch <-> full standing)
+// This is now the ONE mechanism behind every height/crouch/stand-type
+// command -- replaces the old separate setCrouch() (its own +/-
+// amount convention) and the "height <mm>" command (which routed
+// through setBodyHeight()'s IK formulas and could reject or misbehave
+// well before the hand-confirmed floor below, since those formulas
+// have their own, tighter limits -- see computeFrontJointsForHeight()/
+// computeRearJointsForHeight() above, still used internally by
+// updateBalance() but no longer exposed as a user command).
 //
-// standProgress (0 = this crouch, 1 = full standing at HIP_START/
-// KNEE_START) blends every joint through the SAME single fraction, via
-// plain per-joint linear interpolation between its own two confirmed
-// endpoints -- one shared number convention for all eight joints,
-// instead of each function inventing its own sign/amount relationship
-// the way setCrouch()/frontAmountForHeight()/rearAmountForHeight() do.
-// standUpStep() nudges that fraction toward 1 by STAND_STEP_FRACTION
-// each call; updateStandUp() paces repeated calls on a timer so
-// "stand" raises the robot gradually instead of snapping between the
-// two poses in one jump.
+// CROUCH_LOW_HIP/KNEE are the exact angles found by hand-jogging the
+// robot to its lowest stance that still reads level (confirmed
+// directly on hardware). standProgress (0 = that crouch, 1 = full
+// standing at HIP_START/KNEE_START) blends every joint through the
+// SAME single fraction, via plain per-joint linear interpolation
+// between its own two confirmed endpoints -- one shared number
+// convention for all eight joints, instead of each joint/function
+// inventing its own sign/amount relationship.
+//
+// standStep() nudges that fraction toward standTargetProgress by
+// STAND_STEP_FRACTION each call, in whichever direction is needed;
+// updateStand() paces repeated calls on a timer so "stand <percent>"
+// moves the robot gradually instead of snapping in one jump, and works
+// the same way whether raising or lowering.
 // ============================================================
 const int CROUCH_LOW_HIP[NUM_HIPS]  = { 140, 140, 140, 140 }; // FL, FR, RL, RR -- confirmed by hand
 const int CROUCH_LOW_KNEE[NUM_HIPS] = {  30,  20, 240, 250 }; // FL, FR, RL, RR -- confirmed by hand
@@ -520,38 +498,47 @@ void enterCrouchLow() {
   applyStandProgress(0.0);
 }
 
-#define STAND_STEP_FRACTION 0.05 // ~20 steps from crouch to full stand
+#define STAND_STEP_FRACTION 0.05 // ~20 steps end to end
 
-// Advances one step toward standing. Returns false once already fully
-// standing (progress reached 1) -- caller polls this repeatedly (see
-// updateStandUp()) to animate the stand-up gradually rather than in
-// one jump.
-bool standUpStep() {
-  if (standProgress >= 1.0) return false;
-  applyStandProgress(standProgress + STAND_STEP_FRACTION);
+float standTargetProgress = 0.0;
+
+// Advances one step toward standTargetProgress, up or down. Returns
+// false once close enough that it snaps straight to the target --
+// caller polls this repeatedly (see updateStand()) to animate the
+// move gradually rather than in one jump.
+bool standStep() {
+  float delta = standTargetProgress - standProgress;
+  if (fabs(delta) < STAND_STEP_FRACTION) {
+    applyStandProgress(standTargetProgress);
+    return false;
+  }
+  applyStandProgress(standProgress + (delta > 0 ? STAND_STEP_FRACTION : -STAND_STEP_FRACTION));
   return true;
 }
 
-bool standingUpInProgress = false;
+bool standMoveInProgress = false;
 #define STAND_STEP_INTERVAL_MS 300 // time between steps -- gives each eased servo move time to mostly finish before the next nudge
 unsigned long lastStandStepMs = 0;
 
-// Steps the stand-up sequence forward -- call every loop() pass.
-void updateStandUp() {
-  if (!standingUpInProgress) return;
+// Steps the stand sequence forward -- call every loop() pass.
+void updateStand() {
+  if (!standMoveInProgress) return;
   if (millis() - lastStandStepMs < STAND_STEP_INTERVAL_MS) return;
   lastStandStepMs = millis();
-  if (!standUpStep()) {
-    standingUpInProgress = false;
-    Serial.println("Standing complete.");
+  if (!standStep()) {
+    standMoveInProgress = false;
+    Serial.println("Stand target reached.");
   }
 }
 
-// Starts the gradual stand-up sequence. Returns false if it's already
-// running or the robot is already fully standing.
-bool startStandUp() {
-  if (standingUpInProgress || standProgress >= 1.0) return false;
-  standingUpInProgress = true;
+// Starts gradually moving toward targetProgress (0 = CROUCH_LOW, 1 =
+// full standing, anything between is a linear blend of the two).
+// Returns false if a move is already running or it's already there.
+bool startStandMove(float targetProgress) {
+  targetProgress = constrain(targetProgress, 0.0, 1.0);
+  if (standMoveInProgress || fabs(targetProgress - standProgress) < STAND_STEP_FRACTION) return false;
+  standTargetProgress = targetProgress;
+  standMoveInProgress = true;
   lastStandStepMs = millis();
   return true;
 }
@@ -777,8 +764,8 @@ bool isStableOn(int a, int b, int c) {
 // the robot the first several times this runs.
 //
 // If the stance was already set via setReadyStance()/the "ready <mm>"
-// command instead of setBodyHeight()/"height <mm>", the shift below
-// finds the feet already close to where it would have moved them
+// command instead of applyStandProgress()/"stand <percent>", the shift
+// below finds the feet already close to where it would have moved them
 // anyway (see the READY STANCE comment above), so it should have
 // little or nothing left to do -- but it still runs and still gates
 // on isStableOn(), so it's not required to switch commands first.
@@ -1083,16 +1070,24 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | height <mm> | ready <mm> | crouch <amount> | stand | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | ready <mm> | stand | stand <percent> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand") {
-    if (startStandUp()) {
+    if (startStandMove(1.0)) {
       Serial.println("Standing up...");
     } else if (standProgress >= 1.0) {
       Serial.println("Already standing.");
     } else {
-      Serial.println("Already standing up.");
+      Serial.println("Already moving.");
+    }
+
+  } else if (input.startsWith("stand ")) {
+    float pct = constrain(input.substring(6).toFloat(), 0.0, 100.0);
+    if (startStandMove(pct / 100.0)) {
+      Serial.print("Moving to "); Serial.print(pct); Serial.println("% stand...");
+    } else {
+      Serial.println("Already moving, or already at that percent.");
     }
 
   } else if (input == "lift_fl" || input == "lift_fr") {
@@ -1115,14 +1110,6 @@ void handleCommand(String input) {
     allHips(angle);
     Serial.print("All hips -> "); Serial.println(angle);
 
-  } else if (input.startsWith("height ")) {
-    float h = input.substring(7).toFloat();
-    if (setBodyHeight(h)) {
-      Serial.print("Body height -> "); Serial.println(h);
-    } else {
-      Serial.println("Height unreachable while staying level -- at least one leg's hip or knee would need to pass its real limit.");
-    }
-
   } else if (input.startsWith("ready ")) {
     float h = input.substring(6).toFloat();
     if (setReadyStance(h)) {
@@ -1130,11 +1117,6 @@ void handleCommand(String input) {
     } else {
       Serial.println("Ready stance unreachable at that height -- at least one leg's hip or knee would need to pass its real limit with the forward offset applied.");
     }
-
-  } else if (input.startsWith("crouch ")) {
-    int amount = input.substring(7).toInt();
-    setCrouch(amount);
-    Serial.print("Crouch amount -> "); Serial.println(amount);
 
   } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ") ||
              input.startsWith("foot_rl ") || input.startsWith("foot_rr ")) {
@@ -1252,8 +1234,8 @@ void loop() {
   // Step any in-progress lift/lower sequence forward
   updateLiftSequence();
 
-  // Step any in-progress stand-up sequence forward
-  updateStandUp();
+  // Step any in-progress stand sequence forward
+  updateStand();
 
   // Nudge toward level if self-balancing is enabled
   updateBalance();

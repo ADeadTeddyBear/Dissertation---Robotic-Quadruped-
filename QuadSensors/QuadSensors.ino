@@ -379,6 +379,34 @@ float rearAmountForHeight(float heightMM) {
   return degrees(acos(u));
 }
 
+// Computes leg i's (FL/FR) paired hip/knee target for depth heightMM
+// and validates BOTH against that leg's real HIP_MIN/MAX and
+// KNEE_MIN/MAX before returning. Returns false (leaving hipOut/
+// kneeOut untouched) if either joint would need to go past its real
+// limit -- this is what setBodyHeight() used to skip, letting
+// setHip()/setKnee() clamp just one of the pair and silently break
+// the hip/knee relationship the height formula depends on.
+bool computeFrontJointsForHeight(int i, float heightMM, int &hipOut, int &kneeOut) {
+  float aFront = frontAmountForHeight(heightMM);
+  int hip  = (int)round(HIP_START[i] + aFront);
+  int knee = (int)round(KNEE_START[i] - aFront);
+  if (hip < HIP_MIN[i] || hip > HIP_MAX[i] || knee < KNEE_MIN[i] || knee > KNEE_MAX[i]) return false;
+  hipOut = hip;
+  kneeOut = knee;
+  return true;
+}
+
+// Same as computeFrontJointsForHeight(), for leg i (RL/RR).
+bool computeRearJointsForHeight(int i, float heightMM, int &hipOut, int &kneeOut) {
+  float bRear = rearAmountForHeight(heightMM);
+  int hip  = (int)round(HIP_START[i] - bRear);
+  int knee = (int)round(KNEE_START[i] - bRear);
+  if (hip < HIP_MIN[i] || hip > HIP_MAX[i] || knee < KNEE_MIN[i] || knee > KNEE_MAX[i]) return false;
+  hipOut = hip;
+  kneeOut = knee;
+  return true;
+}
+
 // Sets the body to heightMM, level front-to-back, while preserving
 // the confirmed joint-bend directions (front hip+/knee-, rear
 // hip-/knee-) -- replaces the earlier uniform setFoot(i, 0, height)
@@ -386,26 +414,33 @@ float rearAmountForHeight(float heightMM) {
 // made every leg's hip/knee move the SAME direction rather than the
 // asymmetric relationship found by testing.
 //
-// Caveat: heights outside the reachable 60-270mm range clamp the
-// cosine input rather than being rejected, and this doesn't check
-// the computed angles against each leg's confirmed calibration
-// limits (e.g. KNEE_MIN[RL]/[RR] = 20) before committing -- a height
-// needing more bend than a leg's real floor allows will silently
-// clamp there. Test the height range cautiously.
+// Validates all four legs' computed hip/knee pairs against their real
+// limits before moving anything -- if any leg can't reach heightMM
+// without one of its two joints clamping (which would desync that
+// leg's hip/knee from the paired relationship the formula assumes and
+// leave it sitting higher than commanded, not actually reaching
+// heightMM), the whole command is rejected and nothing moves, rather
+// than silently producing an uneven, non-level stance.
 float lastCommandedHeight = 270;
 
-void setBodyHeight(float heightMM) {
+bool setBodyHeight(float heightMM) {
+  int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
+  bool ok = computeFrontJointsForHeight(FL, heightMM, hipFL, kneeFL) &&
+            computeFrontJointsForHeight(FR, heightMM, hipFR, kneeFR) &&
+            computeRearJointsForHeight(RL, heightMM, hipRL, kneeRL) &&
+            computeRearJointsForHeight(RR, heightMM, hipRR, kneeRR);
+  if (!ok) return false;
+
   lastCommandedHeight = heightMM;
-  float aFront = frontAmountForHeight(heightMM);
-  float bRear  = rearAmountForHeight(heightMM);
-  setHip(FL, (int)round(HIP_START[FL] + aFront));
-  setKnee(FL, (int)round(KNEE_START[FL] - aFront));
-  setHip(FR, (int)round(HIP_START[FR] + aFront));
-  setKnee(FR, (int)round(KNEE_START[FR] - aFront));
-  setHip(RL, (int)round(HIP_START[RL] - bRear));
-  setKnee(RL, (int)round(KNEE_START[RL] - bRear));
-  setHip(RR, (int)round(HIP_START[RR] - bRear));
-  setKnee(RR, (int)round(KNEE_START[RR] - bRear));
+  setHip(FL, hipFL);
+  setKnee(FL, kneeFL);
+  setHip(FR, hipFR);
+  setKnee(FR, kneeFR);
+  setHip(RL, hipRL);
+  setKnee(RL, kneeRL);
+  setHip(RR, hipRR);
+  setKnee(RR, kneeRR);
+  return true;
 }
 
 // Per-leg height correction (mm, relative to lastCommandedHeight)
@@ -504,18 +539,21 @@ void updateBalance() {
   for (int i = 0; i < NUM_HIPS; i++) {
     float correction = BALANCE_GAIN * (HIP_OFFSET_X[i] * tanPitch - HIP_OFFSET_Y[i] * tanRoll);
     correction = constrain(correction, -BALANCE_MAX_CORRECTION_MM, BALANCE_MAX_CORRECTION_MM);
-    legHeightCorrection[i] = correction;
     float correctedHeight = lastCommandedHeight + correction;
 
-    if (i == FL || i == FR) {
-      float amount = frontAmountForHeight(correctedHeight);
-      setHip(i, (int)round(HIP_START[i] + amount));
-      setKnee(i, (int)round(KNEE_START[i] - amount));
-    } else {
-      float amount = rearAmountForHeight(correctedHeight);
-      setHip(i, (int)round(HIP_START[i] - amount));
-      setKnee(i, (int)round(KNEE_START[i] - amount));
-    }
+    int hip, knee;
+    bool ok = (i == FL || i == FR) ? computeFrontJointsForHeight(i, correctedHeight, hip, knee)
+                                    : computeRearJointsForHeight(i, correctedHeight, hip, knee);
+    // If this leg's hip or knee would have to pass its real limit to
+    // reach the corrected height, leave it at its last commanded
+    // position this tick rather than clamp just one of the pair --
+    // that's exactly the mismatch that made setBodyHeight() silently
+    // produce a non-level stance (see its validation above).
+    if (!ok) continue;
+
+    legHeightCorrection[i] = correction;
+    setHip(i, hip);
+    setKnee(i, knee);
   }
 }
 
@@ -908,8 +946,11 @@ void handleCommand(String input) {
 
   } else if (input.startsWith("height ")) {
     float h = input.substring(7).toFloat();
-    setBodyHeight(h);
-    Serial.print("Body height -> "); Serial.println(h);
+    if (setBodyHeight(h)) {
+      Serial.print("Body height -> "); Serial.println(h);
+    } else {
+      Serial.println("Height unreachable while staying level -- at least one leg's hip or knee would need to pass its real limit.");
+    }
 
   } else if (input.startsWith("crouch ")) {
     int amount = input.substring(7).toInt();

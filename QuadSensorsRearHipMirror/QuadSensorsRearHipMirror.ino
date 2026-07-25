@@ -148,7 +148,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-a (VL53L0X)"
+#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-b (VL53L0X)"
 
 // ============================================================
 // TIMING
@@ -493,6 +493,59 @@ bool setBodyHeight(float heightMM) {
   setHip(RR, hipRR);
   setKnee(RR, kneeRR);
   return true;
+}
+
+// ============================================================
+// STARTUP HEIGHT (lowest level stance reachable within confirmed limits)
+// Finds the lowest heightMM that computeFrontJointsForHeight()/
+// computeRearJointsForHeightPrimary() can still reach for all four
+// legs -- the exact same per-leg HIP_MIN/MAX and KNEE_MIN/MAX
+// validation setBodyHeight() itself uses, just binary-searched here to
+// find the floor instead of testing one height. Computed at boot
+// rather than hardcoded, so it stays correct if HIP_TRIM/KNEE_START
+// are ever recalibrated -- no magic number to remember to update.
+//
+// Deliberately checks computeRearJointsForHeightPrimary() here, NOT
+// computeRearJointsForHeight() (which also falls back to the mirrored
+// branch) -- the mirrored branch is UNTESTED ON HARDWARE, and letting
+// an automatic boot sequence dive into it every power-on would be
+// exactly the kind of untested-path-runs-by-default situation this
+// codebase otherwise avoids (self-balancing defaults off, lifts need
+// an explicit command, etc.). Checked: with the mirrored branch
+// included the search bottoms out around 9mm -- the front legs' own
+// floor, with the rear leg swung forward and its knee near KNEE_MAX,
+// nowhere near a stance any of this has been run at. Restricting the
+// automatic search to the primary branch keeps this sketch's boot
+// floor identical to QuadSensors.ino's; the mirrored branch stays
+// reachable only via an explicit low "height <mm>"/"ready <mm>" command.
+//
+// At that (primary-branch) floor, the limit is the rear hip
+// approaching HIP_MIN (0) -- the rear knee and both front joints stay
+// comfortably mid-range at that point, so this isn't the "both hip and
+// knee bent to their limits at once" case the SAFETY note above
+// solveLegIK() flags as unconfirmed; only one joint per leg nears a
+// limit, and each of those limits was individually confirmed safe by
+// testing (see the comments on HIP_MIN/HIP_MAX). Still,
+// STARTUP_HEIGHT_MARGIN_MM keeps a small buffer off that exact edge
+// rather than sitting right on it.
+// ============================================================
+#define STARTUP_HEIGHT_MARGIN_MM 3.0
+
+bool allLegsReachHeight(float heightMM) {
+  int hip, knee;
+  return computeFrontJointsForHeight(FL, heightMM, hip, knee) &&
+         computeFrontJointsForHeight(FR, heightMM, hip, knee) &&
+         computeRearJointsForHeightPrimary(RL, heightMM, hip, knee) &&
+         computeRearJointsForHeightPrimary(RR, heightMM, hip, knee);
+}
+
+float findLowestLevelHeight() {
+  float lo = 0.0, hi = 270.0; // hi = full leg extension, always reachable (amount=0 for every leg)
+  for (int iter = 0; iter < 30; iter++) {
+    float mid = (lo + hi) / 2.0;
+    if (allLegsReachHeight(mid)) hi = mid; else lo = mid;
+  }
+  return hi + STARTUP_HEIGHT_MARGIN_MM;
 }
 
 // Per-leg height correction (mm, relative to lastCommandedHeight)
@@ -1186,6 +1239,20 @@ void setup() {
 
   setupVL53L0X();
   setupMPU6050();
+
+  // Lower from the full-extension home pose to the lowest level stance
+  // these legs' confirmed limits allow, computed fresh above rather
+  // than assumed -- queued here (after the setup delays above) rather
+  // than right after the home-pose snap, so the eased ramp isn't
+  // skipped over by time that elapses during setupVL53L0X()/
+  // setupMPU6050()'s delay() calls before loop() gets a chance to
+  // start animating it.
+  float startupHeight = findLowestLevelHeight();
+  if (setBodyHeight(startupHeight)) {
+    Serial.print("Startup height (lowest level) -> "); Serial.println(startupHeight);
+  } else {
+    Serial.println("Startup height search failed unexpectedly -- staying at full extension.");
+  }
 
   Serial.println();
   Serial.println("Ready. Type 'help' for commands.");

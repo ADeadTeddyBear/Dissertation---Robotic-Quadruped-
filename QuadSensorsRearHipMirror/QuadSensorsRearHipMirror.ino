@@ -148,7 +148,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-e (VL53L0X)"
+#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-f (VL53L0X)"
 
 // ============================================================
 // TIMING
@@ -593,6 +593,78 @@ bool startStandMove(float targetProgress) {
   standMoveInProgress = true;
   lastStandStepMs = millis();
   return true;
+}
+
+// ============================================================
+// STAND SWEEP (diagnostic: pitch/roll/ToF across the crouch<->stand range)
+// Steps through SWEEP_CHECKPOINTS via startStandMove(), pausing
+// SWEEP_SETTLE_MS at each stop to let the servos/chassis stop moving
+// before reading sensors, then prints pitch/roll (ground truth from
+// the MPU6050 -- the leg forward-kinematics formula elsewhere in this
+// file gives nonsense results in this crouch's extreme-angle region,
+// e.g. a NEGATIVE computed height for the rear legs at progress=0, so
+// it can't be trusted here) plus both ToF readings (forward-facing,
+// roughly level with the hip pivot) at each checkpoint.
+//
+// This is step 1 toward reading a step's height from a ToF sweep:
+// first confirm, from the real robot, whether "level" actually holds
+// across the whole stand range or only at the two endpoints.
+// ============================================================
+const float SWEEP_CHECKPOINTS[] = {0.0, 0.25, 0.5, 0.75, 1.0};
+#define SWEEP_NUM_CHECKPOINTS 5
+#define SWEEP_SETTLE_MS 1500 // time to let vibration/motion settle before reading sensors
+
+bool sweepInProgress = false;
+bool sweepSettling = false;
+int sweepIndex = -1;
+unsigned long sweepSettleStartMs = 0;
+
+// Starts the sweep from checkpoint 0. Returns false if a sweep or a
+// manual stand move is already in progress.
+bool startStandSweep() {
+  if (sweepInProgress || standMoveInProgress) return false;
+  sweepInProgress = true;
+  sweepSettling = false;
+  sweepIndex = 0;
+  startStandMove(SWEEP_CHECKPOINTS[0]);
+  return true;
+}
+
+void printSweepCheckpoint() {
+  float pitch, roll;
+  readMPU6050(pitch, roll);
+  Serial.print("Sweep "); Serial.print((int)round(SWEEP_CHECKPOINTS[sweepIndex] * 100)); Serial.print("%");
+  Serial.print("  Pitch:"); Serial.print(pitch, 1);
+  Serial.print("  Roll:"); Serial.print(roll, 1);
+  Serial.print("  ToF1:");
+  if (tof1Active && tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
+  Serial.print("  ToF2:");
+  if (tof2Active && tof2_ok) { Serial.print(tof2_mm); Serial.print("mm"); } else { Serial.print("---"); }
+  Serial.println();
+}
+
+// Steps the sweep forward -- call every loop() pass.
+void updateStandSweep() {
+  if (!sweepInProgress) return;
+  if (standMoveInProgress) return; // still moving to this checkpoint
+
+  if (!sweepSettling) {
+    sweepSettling = true;
+    sweepSettleStartMs = millis();
+    return;
+  }
+  if (millis() - sweepSettleStartMs < SWEEP_SETTLE_MS) return;
+
+  printSweepCheckpoint();
+
+  sweepIndex++;
+  if (sweepIndex >= SWEEP_NUM_CHECKPOINTS) {
+    sweepInProgress = false;
+    Serial.println("Sweep complete.");
+    return;
+  }
+  sweepSettling = false;
+  startStandMove(SWEEP_CHECKPOINTS[sweepIndex]);
 }
 
 // ============================================================
@@ -1043,8 +1115,15 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | stand_sweep | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
     Serial.println();
+
+  } else if (input == "stand_sweep") {
+    if (startStandSweep()) {
+      Serial.println("Sweeping 0/25/50/75/100%...");
+    } else {
+      Serial.println("Cannot start sweep (already sweeping, or a stand move is already in progress).");
+    }
 
   } else if (input == "stand") {
     if (startStandMove(1.0)) {
@@ -1201,6 +1280,9 @@ void loop() {
 
   // Step any in-progress stand sequence forward
   updateStand();
+
+  // Step any in-progress stand sweep forward
+  updateStandSweep();
 
   // Nudge toward level if self-balancing is enabled
   updateBalance();

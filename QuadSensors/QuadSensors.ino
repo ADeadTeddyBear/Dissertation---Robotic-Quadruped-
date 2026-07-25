@@ -260,6 +260,15 @@ void updateServoMotion() {
 // segment back toward the chassis, above bends it forward,
 // confirmed by testing on FL.
 //
+// Every reachable (x, y) has two elbow solutions (knee folded
+// backward or forward) that land on the same foot point but leave
+// the calf/wheel pointing a different way. solveLegIK() picks
+// whichever keeps the calf closer to vertical (wheel facing down
+// rather than leaning further out), which for a forward target
+// reduces to the backward-fold branch above (unchanged, still the
+// one confirmed on FL) and only flips to the other branch for
+// backward/extreme targets where it tucks the foot inward instead.
+//
 // SAFETY: the "full combined range (thigh and knee both bent back to
 // their limits at once) doesn't hit the chassis" check has only been
 // physically confirmed for FL so far. FR/RL/RR need their own
@@ -290,19 +299,31 @@ bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut
   float cosKnee = (d2 - LEG_THIGH_MM * LEG_THIGH_MM - LEG_CALF_MM * LEG_CALF_MM)
                   / (2.0 * LEG_THIGH_MM * LEG_CALF_MM);
   cosKnee = constrain(cosKnee, -1.0, 1.0);
+  float kneeMag = acos(cosKnee);
 
-  // Knee bends backward (toward the chassis) to reach a shortened
-  // target, matching a normal walking gait where the foot lifts by
-  // folding the knee back and up. If an assembled leg needs the
-  // other branch instead, flip the sign here.
-  float theta2 = -acos(cosKnee);
+  // Try both elbow solutions -- knee folded backward (toward the
+  // chassis, matching a normal walking gait where the foot lifts by
+  // folding the knee back and up) or forward -- and keep whichever
+  // leaves the calf closer to vertical (smaller |theta1 + theta2|,
+  // the calf's absolute angle from straight down). Branch 0 (backward
+  // fold) is tried first and kept on an exact tie, so already-tested
+  // forward-reaching targets keep today's behavior unchanged.
+  float bestHip = 0, bestKnee = 0, bestAbsFootAngle = -1;
+  for (int branch = 0; branch < 2; branch++) {
+    float theta2 = (branch == 0) ? -kneeMag : kneeMag;
+    float k1 = LEG_THIGH_MM + LEG_CALF_MM * cos(theta2);
+    float k2 = LEG_CALF_MM * sin(theta2);
+    float theta1 = atan2(x, y) - atan2(k2, k1);
+    float absFootAngle = fabs(theta1 + theta2);
+    if (bestAbsFootAngle < 0 || absFootAngle < bestAbsFootAngle) {
+      bestAbsFootAngle = absFootAngle;
+      bestHip  = theta1;
+      bestKnee = theta2;
+    }
+  }
 
-  float k1 = LEG_THIGH_MM + LEG_CALF_MM * cos(theta2);
-  float k2 = LEG_CALF_MM * sin(theta2);
-  float theta1 = atan2(x, y) - atan2(k2, k1);
-
-  hipAngleOut  = degrees(theta1) + HIP_START[i];
-  kneeAngleOut = degrees(theta2) + KNEE_START[i];
+  hipAngleOut  = degrees(bestHip) + HIP_START[i];
+  kneeAngleOut = degrees(bestKnee) + KNEE_START[i];
   return true;
 }
 

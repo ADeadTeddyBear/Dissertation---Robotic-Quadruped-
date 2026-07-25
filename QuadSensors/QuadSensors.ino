@@ -262,12 +262,14 @@ void updateServoMotion() {
 //
 // SAFETY: the "full combined range (thigh and knee both bent back to
 // their limits at once) doesn't hit the chassis" check has only been
-// physically confirmed for FL so far. FR (and RL/RR later) need
-// their own confirmation before trusting foot_* near the back of
-// their workspace -- mirrored legs aren't guaranteed identical
-// clearance, the same reason FR needed its own hip_fr minimum (2)
-// distinct from FL's (6). No combined-angle limit is enforced beyond
-// each leg's own HIP_MIN/MAX and KNEE_MIN/MAX.
+// physically confirmed for FL so far. FR/RL/RR need their own
+// confirmation before trusting foot_* near the back of their
+// workspace -- mirrored legs aren't guaranteed identical clearance,
+// the same reason FR needed its own hip_fr minimum (2) distinct from
+// FL's (6). No combined-angle limit is enforced beyond each leg's own
+// HIP_MIN/MAX and KNEE_MIN/MAX. RL/RR additionally still use
+// placeholder, untested KNEE_START values, so foot_rl/foot_rr targets
+// print a caution and should be jogged slowly and watched closely.
 // ============================================================
 const float LEG_THIGH_MM = 165.0;
 const float LEG_CALF_MM  = 105.0;
@@ -839,7 +841,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr <x_mm> <y_mm> | height <mm> | crouch <amount> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | height <mm> | crouch <amount> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "lift_fl" || input == "lift_fr") {
@@ -872,12 +874,20 @@ void handleCommand(String input) {
     setCrouch(amount);
     Serial.print("Crouch amount -> "); Serial.println(amount);
 
-  } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ")) {
-    int legIdx = input.startsWith("foot_fl ") ? FL : FR;
-    const char *legName = (legIdx == FL) ? "foot_fl" : "foot_fr";
+  } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ") ||
+             input.startsWith("foot_rl ") || input.startsWith("foot_rr ")) {
+    int legIdx = input.startsWith("foot_fl ") ? FL :
+                 input.startsWith("foot_fr ") ? FR :
+                 input.startsWith("foot_rl ") ? RL : RR;
+    const char *legName = (legIdx == FL) ? "foot_fl" :
+                          (legIdx == FR) ? "foot_fr" :
+                          (legIdx == RL) ? "foot_rl" : "foot_rr";
     String rest = input.substring(8);
     int    sep  = rest.indexOf(' ');
     if (sep > 0) {
+      if (legIdx == RL || legIdx == RR) {
+        Serial.println("CAUTION: RL/RR combined hip+knee range and KNEE_START are unconfirmed -- watch for chassis contact.");
+      }
       float x = rest.substring(0, sep).toFloat();
       float y = rest.substring(sep + 1).toFloat();
       if (setFoot(legIdx, x, y)) {

@@ -148,13 +148,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-f (VL53L0X)"
-
-// ============================================================
-// TIMING
-// ============================================================
-#define SENSOR_INTERVAL_MS 200
-unsigned long lastSensorPrint = 0;
+#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-g (VL53L0X)"
 
 // ============================================================
 // SERVO HELPERS
@@ -1287,14 +1281,8 @@ void loop() {
   // Nudge toward level if self-balancing is enabled
   updateBalance();
 
-  // Pick up new ToF data as soon as it's ready, independent of the print timer
+  // Pick up new ToF data as soon as it's ready
   pollTofSensors();
-
-  // Auto sensor print every 200ms
-  if (millis() - lastSensorPrint >= SENSOR_INTERVAL_MS) {
-    printSensors();
-    lastSensorPrint = millis();
-  }
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

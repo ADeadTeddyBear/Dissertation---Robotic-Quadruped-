@@ -148,7 +148,7 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
-#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-b (VL53L0X)"
+#define FIRMWARE_BUILD "QuadSensorsRearHipMirror build 2026-07-25-c (VL53L0X)"
 
 // ============================================================
 // TIMING
@@ -495,59 +495,6 @@ bool setBodyHeight(float heightMM) {
   return true;
 }
 
-// ============================================================
-// STARTUP HEIGHT (lowest level stance reachable within confirmed limits)
-// Finds the lowest heightMM that computeFrontJointsForHeight()/
-// computeRearJointsForHeightPrimary() can still reach for all four
-// legs -- the exact same per-leg HIP_MIN/MAX and KNEE_MIN/MAX
-// validation setBodyHeight() itself uses, just binary-searched here to
-// find the floor instead of testing one height. Computed at boot
-// rather than hardcoded, so it stays correct if HIP_TRIM/KNEE_START
-// are ever recalibrated -- no magic number to remember to update.
-//
-// Deliberately checks computeRearJointsForHeightPrimary() here, NOT
-// computeRearJointsForHeight() (which also falls back to the mirrored
-// branch) -- the mirrored branch is UNTESTED ON HARDWARE, and letting
-// an automatic boot sequence dive into it every power-on would be
-// exactly the kind of untested-path-runs-by-default situation this
-// codebase otherwise avoids (self-balancing defaults off, lifts need
-// an explicit command, etc.). Checked: with the mirrored branch
-// included the search bottoms out around 9mm -- the front legs' own
-// floor, with the rear leg swung forward and its knee near KNEE_MAX,
-// nowhere near a stance any of this has been run at. Restricting the
-// automatic search to the primary branch keeps this sketch's boot
-// floor identical to QuadSensors.ino's; the mirrored branch stays
-// reachable only via an explicit low "height <mm>"/"ready <mm>" command.
-//
-// At that (primary-branch) floor, the limit is the rear hip
-// approaching HIP_MIN (0) -- the rear knee and both front joints stay
-// comfortably mid-range at that point, so this isn't the "both hip and
-// knee bent to their limits at once" case the SAFETY note above
-// solveLegIK() flags as unconfirmed; only one joint per leg nears a
-// limit, and each of those limits was individually confirmed safe by
-// testing (see the comments on HIP_MIN/HIP_MAX). Still,
-// STARTUP_HEIGHT_MARGIN_MM keeps a small buffer off that exact edge
-// rather than sitting right on it.
-// ============================================================
-#define STARTUP_HEIGHT_MARGIN_MM 3.0
-
-bool allLegsReachHeight(float heightMM) {
-  int hip, knee;
-  return computeFrontJointsForHeight(FL, heightMM, hip, knee) &&
-         computeFrontJointsForHeight(FR, heightMM, hip, knee) &&
-         computeRearJointsForHeightPrimary(RL, heightMM, hip, knee) &&
-         computeRearJointsForHeightPrimary(RR, heightMM, hip, knee);
-}
-
-float findLowestLevelHeight() {
-  float lo = 0.0, hi = 270.0; // hi = full leg extension, always reachable (amount=0 for every leg)
-  for (int iter = 0; iter < 30; iter++) {
-    float mid = (lo + hi) / 2.0;
-    if (allLegsReachHeight(mid)) hi = mid; else lo = mid;
-  }
-  return hi + STARTUP_HEIGHT_MARGIN_MM;
-}
-
 // Per-leg height correction (mm, relative to lastCommandedHeight)
 // currently applied by updateBalance() below when self-balancing is
 // enabled; stays at 0 (no effect) otherwise. Kept only for
@@ -576,6 +523,89 @@ void setCrouch(int amount) {
   setHip(RR, HIP_START[RR] - amount);
   setKnee(RL, KNEE_START[RL] - amount);
   setKnee(RR, KNEE_START[RR] - amount);
+}
+
+// ============================================================
+// STAND-UP SEQUENCE (confirmed-low crouch -> full standing)
+// CROUCH_LOW_HIP/KNEE are NOT derived from the height formulas above --
+// they're the exact angles found by hand-jogging the robot to its
+// lowest stance that still reads level (confirmed directly on
+// hardware), which sits lower than computeFrontJointsForHeight()/
+// computeRearJointsForHeight() allow (~193mm) because it uses a
+// different joint relationship than setBodyHeight()'s: every hip
+// rotates the SAME direction from HIP_START (unlike setCrouch()'s
+// rear hip-/knee-, or setBodyHeight()'s split front/rear formulas),
+// while the knees split by front (toward the chassis) and rear (away
+// from it).
+//
+// standProgress (0 = this crouch, 1 = full standing at HIP_START/
+// KNEE_START) blends every joint through the SAME single fraction, via
+// plain per-joint linear interpolation between its own two confirmed
+// endpoints -- one shared number convention for all eight joints,
+// instead of each function inventing its own sign/amount relationship
+// the way setCrouch()/frontAmountForHeight()/rearAmountForHeight() do.
+// standUpStep() nudges that fraction toward 1 by STAND_STEP_FRACTION
+// each call; updateStandUp() paces repeated calls on a timer so
+// "stand" raises the robot gradually instead of snapping between the
+// two poses in one jump.
+// ============================================================
+const int CROUCH_LOW_HIP[NUM_HIPS]  = { 140, 140, 140, 140 }; // FL, FR, RL, RR -- confirmed by hand
+const int CROUCH_LOW_KNEE[NUM_HIPS] = {  30,  20, 240, 250 }; // FL, FR, RL, RR -- confirmed by hand
+
+float standProgress = 0.0; // 0 = CROUCH_LOW stance, 1 = full standing
+
+void applyStandProgress(float progress) {
+  progress = constrain(progress, 0.0, 1.0);
+  standProgress = progress;
+  for (int i = 0; i < NUM_HIPS; i++) {
+    int hip  = (int)round(CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress);
+    int knee = (int)round(CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress);
+    setHip(i, hip);
+    setKnee(i, knee);
+  }
+}
+
+// Goes directly to the confirmed-low crouch -- this is what setup()
+// boots into, since it's the hand-verified safe floor rather than a
+// theoretical one.
+void enterCrouchLow() {
+  applyStandProgress(0.0);
+}
+
+#define STAND_STEP_FRACTION 0.05 // ~20 steps from crouch to full stand
+
+// Advances one step toward standing. Returns false once already fully
+// standing (progress reached 1) -- caller polls this repeatedly (see
+// updateStandUp()) to animate the stand-up gradually rather than in
+// one jump.
+bool standUpStep() {
+  if (standProgress >= 1.0) return false;
+  applyStandProgress(standProgress + STAND_STEP_FRACTION);
+  return true;
+}
+
+bool standingUpInProgress = false;
+#define STAND_STEP_INTERVAL_MS 300 // time between steps -- gives each eased servo move time to mostly finish before the next nudge
+unsigned long lastStandStepMs = 0;
+
+// Steps the stand-up sequence forward -- call every loop() pass.
+void updateStandUp() {
+  if (!standingUpInProgress) return;
+  if (millis() - lastStandStepMs < STAND_STEP_INTERVAL_MS) return;
+  lastStandStepMs = millis();
+  if (!standUpStep()) {
+    standingUpInProgress = false;
+    Serial.println("Standing complete.");
+  }
+}
+
+// Starts the gradual stand-up sequence. Returns false if it's already
+// running or the robot is already fully standing.
+bool startStandUp() {
+  if (standingUpInProgress || standProgress >= 1.0) return false;
+  standingUpInProgress = true;
+  lastStandStepMs = millis();
+  return true;
 }
 
 // ============================================================
@@ -1105,8 +1135,17 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | height <mm> | ready <mm> | crouch <amount> | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | height <mm> | ready <mm> | crouch <amount> | stand | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
     Serial.println();
+
+  } else if (input == "stand") {
+    if (startStandUp()) {
+      Serial.println("Standing up...");
+    } else if (standProgress >= 1.0) {
+      Serial.println("Already standing.");
+    } else {
+      Serial.println("Already standing up.");
+    }
 
   } else if (input == "lift_fl" || input == "lift_fr") {
     int legIdx = (input == "lift_fl") ? FL : FR;
@@ -1240,19 +1279,15 @@ void setup() {
   setupVL53L0X();
   setupMPU6050();
 
-  // Lower from the full-extension home pose to the lowest level stance
-  // these legs' confirmed limits allow, computed fresh above rather
-  // than assumed -- queued here (after the setup delays above) rather
-  // than right after the home-pose snap, so the eased ramp isn't
-  // skipped over by time that elapses during setupVL53L0X()/
-  // setupMPU6050()'s delay() calls before loop() gets a chance to
-  // start animating it.
-  float startupHeight = findLowestLevelHeight();
-  if (setBodyHeight(startupHeight)) {
-    Serial.print("Startup height (lowest level) -> "); Serial.println(startupHeight);
-  } else {
-    Serial.println("Startup height search failed unexpectedly -- staying at full extension.");
-  }
+  // Lower from the full-extension home pose into CROUCH_LOW, the
+  // hand-confirmed lowest level stance -- queued here (after the setup
+  // delays above) rather than right after the home-pose snap, so the
+  // eased ramp isn't skipped over by time that elapses during
+  // setupVL53L0X()/setupMPU6050()'s delay() calls before loop() gets a
+  // chance to start animating it. Send "stand" to raise it gradually
+  // to full standing height from here.
+  enterCrouchLow();
+  Serial.println("Startup height (confirmed low crouch) -> stand up with 'stand'.");
 
   Serial.println();
   Serial.println("Ready. Type 'help' for commands.");
@@ -1268,6 +1303,9 @@ void loop() {
 
   // Step any in-progress lift/lower sequence forward
   updateLiftSequence();
+
+  // Step any in-progress stand-up sequence forward
+  updateStandUp();
 
   // Nudge toward level if self-balancing is enabled
   updateBalance();

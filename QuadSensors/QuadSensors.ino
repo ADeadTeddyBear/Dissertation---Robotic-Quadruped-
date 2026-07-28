@@ -560,7 +560,7 @@ bool startStandMove(float targetProgress) {
 // ============================================================
 #define FINE_STEP_FRACTION 0.01 // 1% per step -- fine enough to localize a jump, unlike the old 25%-apart checkpoints
 #define FINE_STEP_INTERVAL_MS 100 // matches the ToF's own ~100ms continuous-ranging cycle
-#define STEP_CHANGE_THRESHOLD_MM 50 // ToF1 delta between consecutive steps worth reporting -- >=50mm is treated as a step edge
+#define STEP_CHANGE_THRESHOLD_MM 150 // ToF1 delta between consecutive steps worth reporting -- >=150mm is treated as a step edge
 
 #define SCAN_REPORT_STEP_PERCENT 10 // heartbeat trace interval -- see note below
 
@@ -690,13 +690,14 @@ void updateStepScan() {
 
   // Heartbeat trace every SCAN_REPORT_STEP_PERCENT -- a scan that never
   // crosses STEP_CHANGE_THRESHOLD_MM prints NOTHING otherwise (which is
-  // exactly what happened testing against the toolbox at the old 100mm
-  // threshold: no single 1% step ever jumped that much, so the scan
-  // looked like it "didn't work" even though it ran correctly and just
-  // never saw a discontinuity that sharp -- the threshold has since
-  // been lowered to 50mm to catch smaller step edges). This gives
-  // visible confirmation the scan is actually running and collecting
-  // readings, and shows the real trend even when no single step counts
+  // exactly what happened testing against the toolbox at the original
+  // 100mm threshold: no single 1% step ever jumped that much, so the
+  // scan looked like it "didn't work" even though it ran correctly and
+  // just never saw a discontinuity that sharp -- the threshold has
+  // since been tuned to 150mm, a deliberately unambiguous jump size for
+  // a real step test). This gives visible confirmation the scan is
+  // actually running and collecting readings, and shows the real trend
+  // even when no single step counts
   // as a "jump".
   int curPercent = (int)round(standProgress * 100);
   if (curPercent >= nextScanReportPercent) {

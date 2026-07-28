@@ -626,6 +626,21 @@ uint16_t lastScanToF1 = 0;
 bool lastScanToF1Ok = false;
 int nextScanReportPercent = 0;
 
+// Detection is against the scan's STARTING baseline, not the previous
+// step's reading -- a real step/lip clears in one smooth climb over
+// many small steps (confirmed on hardware: a real ~150mm step showed
+// a gradual 461->941mm climb, never a single-step jump), so comparing
+// only to the immediately preceding reading never crosses
+// STEP_CHANGE_THRESHOLD_MM at all. Comparing cumulative drift from the
+// baseline instead catches exactly the point where a lip below 150mm
+// tall has been cleared. Latched to report ONCE per scan -- further
+// drift past that point (e.g. seeing progressively farther down a
+// staircase/hallway beyond the lip) is background, not a second step,
+// and re-reporting it would just be noise.
+uint16_t scanBaselineToF1 = 0;
+bool scanBaselineToF1Ok = false;
+bool scanStepReported = false;
+
 // Starts the scan: goes to 0% first (if not already there), then
 // steps up to 100% in fine increments. Returns false if a scan or a
 // manual stand move is already in progress.
@@ -636,19 +651,22 @@ bool startStepScan() {
   return true;
 }
 
+// Called once, the first time cumulative drift from the scan's
+// baseline crosses STEP_CHANGE_THRESHOLD_MM -- see scanBaselineToF1's
+// comment for why baseline (not the previous step) is what's compared.
 void printScanChange() {
-  Serial.print("ToF1 jump at "); Serial.print((int)round(standProgress * 100)); Serial.print("%: ");
-  if (lastScanToF1Ok) { Serial.print(lastScanToF1); Serial.print("mm"); } else { Serial.print("---"); }
-  Serial.print(" -> ");
+  Serial.print("ToF1 cleared lip at "); Serial.print((int)round(standProgress * 100)); Serial.print("%: baseline=");
+  if (scanBaselineToF1Ok) { Serial.print(scanBaselineToF1); Serial.print("mm"); } else { Serial.print("---"); }
+  Serial.print(" -> now=");
   if (tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
-  Serial.print("  (possible step, delta >= "); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print("mm)");
+  Serial.print("  (possible step, cumulative delta >= "); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print("mm)");
   Serial.println();
 
-  // Only "was close, now far/gone" looks like clearing a step's top
-  // edge while rising -- other jump shapes (e.g. suddenly closer)
-  // aren't this scenario, so don't guess a step from them.
-  bool gotFartherOrGone = (!tof1_ok) || (lastScanToF1Ok && tof1_mm > lastScanToF1);
-  if (lastScanToF1Ok && gotFartherOrGone) {
+  // lastScanToF1 is the most recent reading BEFORE this crossing --
+  // i.e. the last time the beam was still hitting the step's front
+  // face -- so it's the right distance estimate, even though the
+  // crossing itself was detected against the baseline, not this value.
+  if (lastScanToF1Ok) {
     float stepHeightMM  = heightAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM;
     float stepForwardMM = (float)lastScanToF1 + TOF1_FORWARD_OFFSET_MM;
     lastDetectedStepForwardMM = stepForwardMM;
@@ -668,6 +686,9 @@ void updateStepScan() {
     if (standMoveInProgress) return; // still moving to 0%
     lastScanToF1 = tof1_mm;
     lastScanToF1Ok = tof1_ok;
+    scanBaselineToF1 = tof1_mm;
+    scanBaselineToF1Ok = tof1_ok;
+    scanStepReported = false;
     lastScanStepMs = millis();
     nextScanReportPercent = 0;
     scanState = SCAN_STEPPING;
@@ -678,13 +699,20 @@ void updateStepScan() {
   if (millis() - lastScanStepMs < FINE_STEP_INTERVAL_MS) return;
   lastScanStepMs = millis();
 
-  bool changed = false;
-  if (tof1_ok && lastScanToF1Ok) {
-    changed = abs((int)tof1_mm - (int)lastScanToF1) >= STEP_CHANGE_THRESHOLD_MM;
-  } else if (tof1_ok != lastScanToF1Ok) {
-    changed = true; // target appeared or disappeared -- e.g. cleared a step with nothing behind it
+  if (!scanStepReported) {
+    bool crossed = false;
+    if (scanBaselineToF1Ok) {
+      if (!tof1_ok) {
+        crossed = true; // target disappeared entirely -- cleared it with nothing behind
+      } else if (tof1_mm >= scanBaselineToF1 + STEP_CHANGE_THRESHOLD_MM) {
+        crossed = true; // cumulative drift from baseline crossed the threshold
+      }
+    }
+    if (crossed) {
+      printScanChange();
+      scanStepReported = true;
+    }
   }
-  if (changed) printScanChange();
   lastScanToF1 = tof1_mm;
   lastScanToF1Ok = tof1_ok;
 
@@ -708,7 +736,11 @@ void updateStepScan() {
 
   if (standProgress >= 1.0) {
     scanState = SCAN_IDLE;
-    Serial.println("Scan complete.");
+    if (!scanStepReported) {
+      Serial.println("Scan complete. No step/lip crossing found in this range.");
+    } else {
+      Serial.println("Scan complete.");
+    }
     return;
   }
   applyStandProgress(standProgress + FINE_STEP_FRACTION);

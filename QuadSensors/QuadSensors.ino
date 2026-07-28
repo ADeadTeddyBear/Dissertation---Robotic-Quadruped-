@@ -564,6 +564,61 @@ bool startStandMove(float targetProgress) {
 
 #define SCAN_REPORT_STEP_PERCENT 10 // heartbeat trace interval -- see note below
 
+// ------------------------------------------------------------
+// ToF1 -> step geometry. ToF1 is mounted fixed to the chassis (not a
+// leg), aimed level/forward -- confirmed by hand, not angled down. So
+// the beam itself doesn't sweep the ground: as stand_sweep changes
+// body height, ToF1's HEIGHT ABOVE THE GROUND changes while its beam
+// stays horizontal, so it's the sensor's height sweeping through
+// space, not its aim direction. Scanning crouch->stand raises the
+// sensor; while it's below the step's top, the beam hits the step's
+// front (riser) face at a roughly constant distance; the moment the
+// sensor rises above the step's height, the beam clears the top edge
+// and suddenly reads far (or nothing) -- that crossover is exactly
+// the jump stand_sweep already detects.
+//
+// That means, at the jump:
+//   step height  = (this leg's real hip-to-ground height at the
+//                   jump's standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM
+//   step forward = (the last close reading before the jump) +
+//                   TOF1_FORWARD_OFFSET_MM
+// "Real hip-to-ground height at a given standProgress" doesn't need
+// new calibration -- applyStandProgress() already interpolates hip/
+// knee ANGLE directly between two confirmed endpoints (CROUCH_LOW and
+// HIP_START/KNEE_START), so running that same interpolated angle
+// through the same trig legForwardKinematics() uses gives the exact
+// real height, not an approximation.
+//
+// TOF1_HEIGHT_ABOVE_HIP_MM/TOF1_FORWARD_OFFSET_MM are rough hand
+// measurements ("a few mm" / "~3mm") -- refine with calipers if a
+// step attempt ends up consistently short/long by a small amount.
+//
+// UNVALIDATED: this is a hypothesis from the sensor's confirmed
+// mounting, not yet confirmed against a real known step -- the
+// toolbox test that motivated lowering STEP_CHANGE_THRESHOLD_MM never
+// produced a jump at all, so treat the first few estimates as
+// something to sanity-check by eye/tape measure, not trust blindly.
+// ------------------------------------------------------------
+#define TOF1_HEIGHT_ABOVE_HIP_MM 5.0 // measured: "a few mm" above the hip-pivot line
+#define TOF1_FORWARD_OFFSET_MM   3.0 // measured: ~3mm forward of the front hip pivots
+#define TOF1_HEIGHT_REF_LEG      FL  // any leg works (all move identically during the sweep); front leg chosen since ToF1 sits at the front
+
+// Real hip-to-ground height (mm) leg i would have at a given
+// standProgress, using the exact CROUCH_LOW<->HIP_START/KNEE_START
+// angle interpolation applyStandProgress() itself commands -- not an
+// approximation, since that interpolation IS what's actually driving
+// the servos during the sweep.
+float heightAtStandProgress(int i, float progress) {
+  float hip  = CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress;
+  float knee = CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress;
+  float theta1 = radians(hip - HIP_START[i]);
+  float theta2 = radians(knee - KNEE_START[i]);
+  return LEG_THIGH_MM * cos(theta1) + LEG_CALF_MM * cos(theta1 + theta2);
+}
+
+float lastDetectedStepForwardMM = 0, lastDetectedStepHeightMM = 0;
+bool  lastDetectedStepValid = false;
+
 enum ScanState { SCAN_IDLE, SCAN_TO_START, SCAN_STEPPING };
 ScanState scanState = SCAN_IDLE;
 unsigned long lastScanStepMs = 0;
@@ -588,6 +643,21 @@ void printScanChange() {
   if (tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
   Serial.print("  (possible step, delta >= "); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print("mm)");
   Serial.println();
+
+  // Only "was close, now far/gone" looks like clearing a step's top
+  // edge while rising -- other jump shapes (e.g. suddenly closer)
+  // aren't this scenario, so don't guess a step from them.
+  bool gotFartherOrGone = (!tof1_ok) || (lastScanToF1Ok && tof1_mm > lastScanToF1);
+  if (lastScanToF1Ok && gotFartherOrGone) {
+    float stepHeightMM  = heightAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM;
+    float stepForwardMM = (float)lastScanToF1 + TOF1_FORWARD_OFFSET_MM;
+    lastDetectedStepForwardMM = stepForwardMM;
+    lastDetectedStepHeightMM  = stepHeightMM;
+    lastDetectedStepValid = true;
+    Serial.print("  -> estimated step: height~"); Serial.print(stepHeightMM, 0);
+    Serial.print("mm at ~"); Serial.print(stepForwardMM, 0);
+    Serial.println("mm forward of the hip. UNVALIDATED estimate -- sanity-check before trusting step_scan_*.");
+  }
 }
 
 // Steps the scan forward -- call every loop() pass.
@@ -791,14 +861,29 @@ bool isStableOn(int a, int b, int c) {
 // Sequence has two paths after the weight shift:
 //   plain lift:   SHIFT -> TUCK (raise, x->0) -> HOLD -> (on "lower")
 //                 UNTUCK (back to orig stance) -> restore stance -> IDLE
-//   step place:   SHIFT -> TUCK (raise, x->0) -> REACH (extend to the
-//                 step's x/y) -> HOLD -> (on "lower") RETRACT (back to
-//                 tuck pose) -> UNTUCK (back to orig stance) -> restore
-//                 stance -> IDLE
+//   step place:   SHIFT -> TUCK (raise, x->0) -> CLEAR (move forward to
+//                 the step's x while STAYING elevated above the step's
+//                 own height, not just above the ground) -> REACH
+//                 (vertical-only descent onto the step, now that the
+//                 leading edge is already behind the foot) -> HOLD ->
+//                 (on "lower") RISE (vertical-only ascent back to the
+//                 same clear height) -> RETRACT (move back to x=0
+//                 while still elevated) -> UNTUCK (descend to orig
+//                 stance) -> restore stance -> IDLE
 // The TUCK phase (foot pulled to directly under the hip while raised)
 // is deliberate: the leg should stay as close to the body as possible
 // while airborne and unsupported, rather than swinging forward first
 // and only then lifting.
+//
+// The CLEAR/RISE phases exist because hip and knee each ease
+// independently in angle-space between two setFoot() targets -- NOT
+// along a straight Cartesian line -- so a single move straight from
+// tucked-and-raised to the step target could dip the foot below the
+// step's height while still short of it horizontally and clip the
+// step's front face. Splitting horizontal and vertical motion into
+// separate moves (move forward while elevated, THEN descend; ascend,
+// THEN move back while elevated) keeps the foot provably above the
+// step's height for the entire horizontal traverse.
 //
 // Step target Y uses the same body-height convention as everywhere
 // else in this file (depth below the hip) -- a TALLER step needs a
@@ -807,14 +892,12 @@ bool isStableOn(int a, int b, int c) {
 // above for the same relationship applied to whole-body height.
 //
 // UNTESTED ON HARDWARE. Watch closely and be ready to catch/support
-// the robot the first several times this runs. Step height should be
-// comfortably less than LEG_LIFT_MM's clearance margin below the
-// step's own edge, or the tucked foot may catch the step on approach --
-// this isn't checked in software.
+// the robot the first several times this runs.
 // ============================================================
-#define LEG_LIFT_MM 30.0 // conservative -- thighs should not fully lift yet
+#define LEG_LIFT_MM 30.0        // conservative -- thighs should not fully lift yet
+#define STEP_CLEAR_MARGIN_MM 20.0 // extra clearance above the step's own top surface during the horizontal traverse
 
-enum LiftState { LIFT_IDLE, LIFT_SHIFTING, LIFT_TUCK, LIFT_REACH, LIFT_HOLDING, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 int liftLegIdx = -1;
 int liftStanceIdx[3];
@@ -822,6 +905,16 @@ float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the sh
 float liftOrigX, liftOrigY;           // the lifted leg's own foot position before the shift, to restore on lower
 bool  liftIsStepPlace = false;
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
+
+// The elevated Y used for the horizontal CLEAR/RETRACT traverses:
+// whichever is more elevated (smaller y) of the plain ground-clearance
+// tuck height, or the step's own top surface plus a safety margin --
+// so the foot clears BOTH the ground and the step top, whichever is higher.
+float computeClearY() {
+  float groundClearY = liftOrigY - LEG_LIFT_MM;
+  float stepClearY = lastCommandedHeight - liftStepHeightMM - STEP_CLEAR_MARGIN_MM;
+  return min(groundClearY, stepClearY);
+}
 
 bool legMoveDone(int i) {
   unsigned long now = millis();
@@ -887,11 +980,12 @@ bool startPlaceOnStep(int legToLift, float stepForwardMM, float stepHeightMM) {
 bool startLower() {
   if (liftState != LIFT_HOLDING) return false;
   if (liftIsStepPlace) {
-    // Pull back off the step to the tucked/raised pose first, rather
-    // than dropping straight down from wherever the reach left it --
-    // avoids dragging the foot down the front of the step.
-    setFoot(liftLegIdx, 0, liftOrigY - LEG_LIFT_MM);
-    liftState = LIFT_RETRACT;
+    // Rise straight up (vertical-only) off the step to the same clear
+    // height used on the way in, BEFORE moving back horizontally --
+    // mirrors the outbound CLEAR-then-descend split so the foot never
+    // drags back across the step's front face at tread height.
+    setFoot(liftLegIdx, liftStepForwardMM, computeClearY());
+    liftState = LIFT_RISE;
   } else {
     setFoot(liftLegIdx, liftOrigX, liftOrigY);
     liftState = LIFT_UNTUCK;
@@ -923,22 +1017,45 @@ void updateLiftSequence() {
   } else if (liftState == LIFT_TUCK) {
     if (!legMoveDone(liftLegIdx)) return;
     if (liftIsStepPlace) {
-      float targetY = lastCommandedHeight - liftStepHeightMM;
-      if (!setFoot(liftLegIdx, liftStepForwardMM, targetY)) {
-        Serial.println("Step placement aborted: reach target unreachable -- check step distance/height against this leg's workspace.");
-        liftState = LIFT_HOLDING; // still tucked and clear of the ground; leave it there, not mid-fault
+      // Move forward to the step's x while staying at the elevated
+      // clear height -- NOT yet the step's own target y -- so the
+      // foot is already past the leading edge before it ever
+      // descends to tread height.
+      if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY())) {
+        Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
+        liftState = LIFT_IDLE;
+        liftLegIdx = -1;
         return;
       }
-      liftState = LIFT_REACH;
+      liftState = LIFT_CLEAR;
     } else {
       Serial.println("Leg lifted (tucked).");
       liftState = LIFT_HOLDING;
     }
 
+  } else if (liftState == LIFT_CLEAR) {
+    if (!legMoveDone(liftLegIdx)) return;
+    // Now purely a vertical descent at a fixed x -- the leading edge
+    // is already behind the foot, so this can't clip the step face.
+    float targetY = lastCommandedHeight - liftStepHeightMM;
+    if (!setFoot(liftLegIdx, liftStepForwardMM, targetY)) {
+      Serial.println("Step placement aborted: descent target unreachable -- check step height against this leg's workspace.");
+      liftState = LIFT_HOLDING; // still elevated and clear of the step; leave it there, not mid-fault
+      return;
+    }
+    liftState = LIFT_REACH;
+
   } else if (liftState == LIFT_REACH) {
     if (!legMoveDone(liftLegIdx)) return;
     Serial.println("Foot placed on step.");
     liftState = LIFT_HOLDING;
+
+  } else if (liftState == LIFT_RISE) {
+    if (!legMoveDone(liftLegIdx)) return;
+    // Now purely a horizontal move at the fixed clear height -- back
+    // past the step's edge before ever descending toward the ground.
+    setFoot(liftLegIdx, 0, computeClearY());
+    liftState = LIFT_RETRACT;
 
   } else if (liftState == LIFT_RETRACT) {
     if (!legMoveDone(liftLegIdx)) return;
@@ -1168,7 +1285,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -1220,6 +1337,22 @@ void handleCommand(String input) {
       }
     } else {
       Serial.println("Usage: step_fl/fr/rl/rr <forward_mm> <step_height_mm>");
+    }
+
+  } else if (input == "step_scan_fl" || input == "step_scan_fr" ||
+             input == "step_scan_rl" || input == "step_scan_rr") {
+    if (!lastDetectedStepValid) {
+      Serial.println("No step estimate yet -- run stand_sweep first and watch for an estimated-step line.");
+    } else {
+      int legIdx = (input == "step_scan_fl") ? FL : (input == "step_scan_fr") ? FR :
+                   (input == "step_scan_rl") ? RL : RR;
+      Serial.print("Using last scan estimate: height~"); Serial.print(lastDetectedStepHeightMM, 0);
+      Serial.print("mm at ~"); Serial.print(lastDetectedStepForwardMM, 0); Serial.println("mm forward.");
+      if (startPlaceOnStep(legIdx, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
+        Serial.println("Shifting weight before step placement...");
+      } else {
+        Serial.println("Cannot start step placement (already mid-sequence, or unreachable shift).");
+      }
     }
 
   } else if (input == "lower") {

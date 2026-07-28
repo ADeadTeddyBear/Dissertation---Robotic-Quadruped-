@@ -259,20 +259,19 @@ void updateServoMotion() {
 // the calf/wheel pointing a different way. solveLegIK() picks
 // whichever keeps the calf closer to vertical (wheel facing down
 // rather than leaning further out), which for a forward target
-// reduces to the backward-fold branch above (unchanged, still the
-// one confirmed on FL) and only flips to the other branch for
-// backward/extreme targets where it tucks the foot inward instead.
+// reduces to the backward-fold branch above and only flips to the
+// other branch for backward/extreme targets where it tucks the foot
+// inward instead. Confirmed by testing on all four legs.
 //
 // SAFETY: the "full combined range (thigh and knee both bent back to
-// their limits at once) doesn't hit the chassis" check has only been
-// physically confirmed for FL so far. FR/RL/RR need their own
-// confirmation before trusting foot_* near the back of their
-// workspace -- mirrored legs aren't guaranteed identical clearance,
-// the same reason FR needed its own hip_fr minimum (2) distinct from
-// FL's (6). No combined-angle limit is enforced beyond each leg's own
-// HIP_MIN/MAX and KNEE_MIN/MAX. RL/RR additionally still use
-// placeholder, untested KNEE_START values, so foot_rl/foot_rr targets
-// print a caution and should be jogged slowly and watched closely.
+// their limits at once) doesn't hit the chassis" check is now
+// confirmed on all four legs. No combined-angle limit is enforced
+// beyond each leg's own HIP_MIN/MAX and KNEE_MIN/MAX -- mirrored legs
+// aren't guaranteed identical clearance (the same reason FR needed its
+// own hip_fr minimum (2) distinct from FL's (6)), so a future
+// recalibration of any leg's HIP_MIN/MAX/KNEE_MIN/MAX should be
+// re-checked against the chassis before trusting foot_* near the edge
+// of that leg's workspace again.
 // ============================================================
 const float LEG_THIGH_MM = 165.0;
 const float LEG_CALF_MM  = 105.0;
@@ -561,7 +560,7 @@ bool startStandMove(float targetProgress) {
 // ============================================================
 #define FINE_STEP_FRACTION 0.01 // 1% per step -- fine enough to localize a jump, unlike the old 25%-apart checkpoints
 #define FINE_STEP_INTERVAL_MS 100 // matches the ToF's own ~100ms continuous-ranging cycle
-#define STEP_CHANGE_THRESHOLD_MM 100 // ToF1 delta between consecutive steps worth reporting
+#define STEP_CHANGE_THRESHOLD_MM 50 // ToF1 delta between consecutive steps worth reporting -- >=50mm is treated as a step edge
 
 #define SCAN_REPORT_STEP_PERCENT 10 // heartbeat trace interval -- see note below
 
@@ -587,6 +586,7 @@ void printScanChange() {
   if (lastScanToF1Ok) { Serial.print(lastScanToF1); Serial.print("mm"); } else { Serial.print("---"); }
   Serial.print(" -> ");
   if (tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
+  Serial.print("  (possible step, delta >= "); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print("mm)");
   Serial.println();
 }
 
@@ -620,12 +620,14 @@ void updateStepScan() {
 
   // Heartbeat trace every SCAN_REPORT_STEP_PERCENT -- a scan that never
   // crosses STEP_CHANGE_THRESHOLD_MM prints NOTHING otherwise (which is
-  // exactly what happened testing against the toolbox: no single 1%
-  // step ever jumped 100mm, so the scan looked like it "didn't work"
-  // even though it ran correctly and just never saw a discontinuity
-  // that sharp). This gives visible confirmation the scan is actually
-  // running and collecting readings, and shows the real trend even
-  // when no single step counts as a "jump".
+  // exactly what happened testing against the toolbox at the old 100mm
+  // threshold: no single 1% step ever jumped that much, so the scan
+  // looked like it "didn't work" even though it ran correctly and just
+  // never saw a discontinuity that sharp -- the threshold has since
+  // been lowered to 50mm to catch smaller step edges). This gives
+  // visible confirmation the scan is actually running and collecting
+  // readings, and shows the real trend even when no single step counts
+  // as a "jump".
   int curPercent = (int)round(standProgress * 100);
   if (curPercent >= nextScanReportPercent) {
     Serial.print(curPercent); Serial.print("%: ToF1=");
@@ -770,12 +772,12 @@ bool isStableOn(int a, int b, int c) {
 }
 
 // ============================================================
-// LEG LIFT SEQUENCE (front legs only for now)
+// LEG LIFT / STEP-PLACEMENT SEQUENCE (all four legs)
 // With all four feet at their neutral stance, the geometry above
-// works out to a real finding: lifting one front leg leaves the
-// body's center sitting exactly on the boundary of the remaining
-// 3-leg support triangle -- zero margin, not just "a bit tight". A
-// weight shift before lifting isn't optional here.
+// works out to a real finding: lifting one leg leaves the body's
+// center sitting exactly on the boundary of the remaining 3-leg
+// support triangle -- zero margin, not just "a bit tight". A weight
+// shift before lifting isn't optional here.
 //
 // Since these legs can only move fore-aft (no side-to-side/
 // ab-adduction capability), the shift below is a centroid-alignment
@@ -786,16 +788,40 @@ bool isStableOn(int a, int b, int c) {
 // if the shift didn't achieve real margin, the lift aborts with a
 // message rather than proceeding on the heuristic alone.
 //
+// Sequence has two paths after the weight shift:
+//   plain lift:   SHIFT -> TUCK (raise, x->0) -> HOLD -> (on "lower")
+//                 UNTUCK (back to orig stance) -> restore stance -> IDLE
+//   step place:   SHIFT -> TUCK (raise, x->0) -> REACH (extend to the
+//                 step's x/y) -> HOLD -> (on "lower") RETRACT (back to
+//                 tuck pose) -> UNTUCK (back to orig stance) -> restore
+//                 stance -> IDLE
+// The TUCK phase (foot pulled to directly under the hip while raised)
+// is deliberate: the leg should stay as close to the body as possible
+// while airborne and unsupported, rather than swinging forward first
+// and only then lifting.
+//
+// Step target Y uses the same body-height convention as everywhere
+// else in this file (depth below the hip) -- a TALLER step needs a
+// SMALLER y (it's closer to the hip), computed as
+// lastCommandedHeight - stepHeightMM. See computeFrontJointsForHeight()
+// above for the same relationship applied to whole-body height.
+//
 // UNTESTED ON HARDWARE. Watch closely and be ready to catch/support
-// the robot the first several times this runs.
+// the robot the first several times this runs. Step height should be
+// comfortably less than LEG_LIFT_MM's clearance margin below the
+// step's own edge, or the tucked foot may catch the step on approach --
+// this isn't checked in software.
 // ============================================================
 #define LEG_LIFT_MM 30.0 // conservative -- thighs should not fully lift yet
 
-enum LiftState { LIFT_IDLE, LIFT_SHIFTING, LIFT_LIFTING, LIFT_UP, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_SHIFTING, LIFT_TUCK, LIFT_REACH, LIFT_HOLDING, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 int liftLegIdx = -1;
 int liftStanceIdx[3];
 float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the shift, to restore on lower
+float liftOrigX, liftOrigY;           // the lifted leg's own foot position before the shift, to restore on lower
+bool  liftIsStepPlace = false;
+float liftStepForwardMM = 0, liftStepHeightMM = 0;
 
 bool legMoveDone(int i) {
   unsigned long now = millis();
@@ -804,14 +830,15 @@ bool legMoveDone(int i) {
   return hipDone && kneeDone;
 }
 
-// Starts lifting leg legToLift (FL or FR only). Returns false without
-// doing anything if a lift is already in progress or the leg isn't a
-// front leg. NOTE: if a stance leg's shift turns out to be
-// unreachable partway through, the legs before it in the loop will
-// already have been commanded -- this doesn't roll those back.
-bool startLift(int legToLift) {
-  if (legToLift != FL && legToLift != FR) return false;
+// Common weight-shift + bookkeeping shared by startLift() and
+// startPlaceOnStep(). Returns false without doing anything if a
+// sequence is already in progress. NOTE: if a stance leg's shift turns
+// out to be unreachable partway through, the legs before it in the
+// loop will already have been commanded -- this doesn't roll those back.
+bool startLiftSequence(int legToLift) {
   if (liftState != LIFT_IDLE) return false;
+
+  legForwardKinematics(legToLift, liftOrigX, liftOrigY);
 
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {
@@ -839,19 +866,40 @@ bool startLift(int legToLift) {
   return true;
 }
 
-// Starts lowering the currently-lifted leg and restoring the shifted
-// stance legs back to their pre-lift positions.
+// Starts a plain lift-and-hold on legToLift (any leg).
+bool startLift(int legToLift) {
+  liftIsStepPlace = false;
+  return startLiftSequence(legToLift);
+}
+
+// Starts a lift, weight shift, and reach onto a step at
+// (stepForwardMM, stepHeightMM) relative to the ground/hip, on
+// legToLift (any leg).
+bool startPlaceOnStep(int legToLift, float stepForwardMM, float stepHeightMM) {
+  liftIsStepPlace = true;
+  liftStepForwardMM = stepForwardMM;
+  liftStepHeightMM = stepHeightMM;
+  return startLiftSequence(legToLift);
+}
+
+// Starts retracting/lowering the currently-held leg (whether plain-
+// lifted or placed on a step) and restoring the shifted stance legs.
 bool startLower() {
-  if (liftState != LIFT_UP) return false;
-  float lx, ly;
-  legForwardKinematics(liftLegIdx, lx, ly);
-  setFoot(liftLegIdx, lx, ly + LEG_LIFT_MM);
-  for (int k = 0; k < 3; k++) setFoot(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
-  liftState = LIFT_LOWERING;
+  if (liftState != LIFT_HOLDING) return false;
+  if (liftIsStepPlace) {
+    // Pull back off the step to the tucked/raised pose first, rather
+    // than dropping straight down from wherever the reach left it --
+    // avoids dragging the foot down the front of the step.
+    setFoot(liftLegIdx, 0, liftOrigY - LEG_LIFT_MM);
+    liftState = LIFT_RETRACT;
+  } else {
+    setFoot(liftLegIdx, liftOrigX, liftOrigY);
+    liftState = LIFT_UNTUCK;
+  }
   return true;
 }
 
-// Steps the lift/lower sequence forward -- call every loop() pass.
+// Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
   if (liftState == LIFT_SHIFTING) {
     for (int k = 0; k < 3; k++) if (!legMoveDone(liftStanceIdx[k])) return;
@@ -861,15 +909,46 @@ void updateLiftSequence() {
       liftLegIdx = -1;
       return;
     }
-    float lx, ly;
-    legForwardKinematics(liftLegIdx, lx, ly);
-    setFoot(liftLegIdx, lx, ly - LEG_LIFT_MM); // y is down+, so subtract to raise the foot
-    liftState = LIFT_LIFTING;
+    // Tuck: bring the foot toward directly under the hip (x=0) while
+    // raising it clear of the ground -- keeps the leg as close to the
+    // body as possible while airborne, rather than swinging out first.
+    if (!setFoot(liftLegIdx, 0, liftOrigY - LEG_LIFT_MM)) {
+      Serial.println("Lift aborted: tuck-raise target unreachable.");
+      liftState = LIFT_IDLE;
+      liftLegIdx = -1;
+      return;
+    }
+    liftState = LIFT_TUCK;
 
-  } else if (liftState == LIFT_LIFTING) {
+  } else if (liftState == LIFT_TUCK) {
     if (!legMoveDone(liftLegIdx)) return;
-    Serial.println("Leg lifted.");
-    liftState = LIFT_UP;
+    if (liftIsStepPlace) {
+      float targetY = lastCommandedHeight - liftStepHeightMM;
+      if (!setFoot(liftLegIdx, liftStepForwardMM, targetY)) {
+        Serial.println("Step placement aborted: reach target unreachable -- check step distance/height against this leg's workspace.");
+        liftState = LIFT_HOLDING; // still tucked and clear of the ground; leave it there, not mid-fault
+        return;
+      }
+      liftState = LIFT_REACH;
+    } else {
+      Serial.println("Leg lifted (tucked).");
+      liftState = LIFT_HOLDING;
+    }
+
+  } else if (liftState == LIFT_REACH) {
+    if (!legMoveDone(liftLegIdx)) return;
+    Serial.println("Foot placed on step.");
+    liftState = LIFT_HOLDING;
+
+  } else if (liftState == LIFT_RETRACT) {
+    if (!legMoveDone(liftLegIdx)) return;
+    setFoot(liftLegIdx, liftOrigX, liftOrigY);
+    liftState = LIFT_UNTUCK;
+
+  } else if (liftState == LIFT_UNTUCK) {
+    if (!legMoveDone(liftLegIdx)) return;
+    for (int k = 0; k < 3; k++) setFoot(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
+    liftState = LIFT_LOWERING;
 
   } else if (liftState == LIFT_LOWERING) {
     bool allDone = legMoveDone(liftLegIdx);
@@ -1089,7 +1168,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | stand_sweep | lift_fl | lift_fr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -1116,12 +1195,31 @@ void handleCommand(String input) {
       Serial.println("Already moving, or already at that percent.");
     }
 
-  } else if (input == "lift_fl" || input == "lift_fr") {
-    int legIdx = (input == "lift_fl") ? FL : FR;
+  } else if (input == "lift_fl" || input == "lift_fr" || input == "lift_rl" || input == "lift_rr") {
+    int legIdx = (input == "lift_fl") ? FL : (input == "lift_fr") ? FR : (input == "lift_rl") ? RL : RR;
     if (startLift(legIdx)) {
       Serial.println("Shifting weight before lift...");
     } else {
       Serial.println("Cannot start lift (already mid-sequence, or unreachable shift).");
+    }
+
+  } else if (input.startsWith("step_fl ") || input.startsWith("step_fr ") ||
+             input.startsWith("step_rl ") || input.startsWith("step_rr ")) {
+    int legIdx = input.startsWith("step_fl ") ? FL :
+                 input.startsWith("step_fr ") ? FR :
+                 input.startsWith("step_rl ") ? RL : RR;
+    String rest = input.substring(8);
+    int    sep  = rest.indexOf(' ');
+    if (sep > 0) {
+      float forwardMM = rest.substring(0, sep).toFloat();
+      float heightMM  = rest.substring(sep + 1).toFloat();
+      if (startPlaceOnStep(legIdx, forwardMM, heightMM)) {
+        Serial.println("Shifting weight before step placement...");
+      } else {
+        Serial.println("Cannot start step placement (already mid-sequence, or unreachable shift).");
+      }
+    } else {
+      Serial.println("Usage: step_fl/fr/rl/rr <forward_mm> <step_height_mm>");
     }
 
   } else if (input == "lower") {
@@ -1147,9 +1245,6 @@ void handleCommand(String input) {
     String rest = input.substring(8);
     int    sep  = rest.indexOf(' ');
     if (sep > 0) {
-      if (legIdx == RL || legIdx == RR) {
-        Serial.println("CAUTION: RL/RR combined hip+knee range and KNEE_START are unconfirmed -- watch for chassis contact.");
-      }
       float x = rest.substring(0, sep).toFloat();
       float y = rest.substring(sep + 1).toFloat();
       if (setFoot(legIdx, x, y)) {

@@ -290,7 +290,13 @@ const float LEG_CALF_MM  = 150.0; // hip-to-knee measured 165mm, knee-to-ground 
 // fills hipAngleOut/kneeAngleOut with servo angles. These are not yet
 // clamped to leg i's HIP_MIN/MAX or KNEE_MIN/MAX -- setFoot() still
 // routes them through setHip()/setKnee(), which enforce those.
-bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut) {
+// forceBranch: -1 (default) picks whichever of the two elbow solutions
+// is closest to the leg's current commanded angles, as described below.
+// 0 forces the backward fold, 1 forces the forward fold, regardless of
+// continuity -- used to deliberately hold a stance leg in the OTHER
+// elbow configuration for the same foot point (see the rear-knee-fold
+// experiment in LIFT_SHIFTING).
+bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut, int forceBranch = -1) {
   float d2 = x * x + y * y;
   float d  = sqrt(d2);
   if (d > (LEG_THIGH_MM + LEG_CALF_MM) || d < fabs(LEG_THIGH_MM - LEG_CALF_MM)) {
@@ -321,8 +327,13 @@ bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut
   // reach from a normal stance was never near a branch boundary to
   // begin with). Branch 0 (backward fold) is tried first and kept on
   // an exact tie.
+  //
+  // forceBranch skips the continuity comparison entirely and just
+  // takes that one branch's solution -- same underlying math, just no
+  // choice involved.
   float bestHip = 0, bestKnee = 0, bestAngleChange = -1;
   for (int branch = 0; branch < 2; branch++) {
+    if (forceBranch >= 0 && branch != forceBranch) continue;
     float theta2 = (branch == 0) ? -kneeMag : kneeMag;
     float k1 = LEG_THIGH_MM + LEG_CALF_MM * cos(theta2);
     float k2 = LEG_CALF_MM * sin(theta2);
@@ -350,9 +361,9 @@ bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut
 // (each joint still eases independently in angle-space, so this
 // isn't a true straight-line Cartesian path, just a closer
 // approximation than leaving the durations independent).
-bool setFoot(int i, float x, float y) {
+bool setFoot(int i, float x, float y, int forceBranch = -1) {
   float hipAngle, kneeAngle;
-  if (!solveLegIK(i, x, y, hipAngle, kneeAngle)) return false;
+  if (!solveLegIK(i, x, y, hipAngle, kneeAngle, forceBranch)) return false;
   setHip(i, (int)round(hipAngle));
   setKnee(i, (int)round(kneeAngle));
   unsigned long dur = max(hipMoveDurationMs[i], kneeMoveDurationMs[i]);
@@ -1170,6 +1181,7 @@ int liftStanceIdx[3];
 float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the shift, to restore on lower
 float liftOrigX, liftOrigY;           // the lifted leg's own foot position before the shift, to restore on lower
 bool  liftIsStepPlace = false;
+bool  liftTiltAborted = false; // set by checkLiftTiltSafety() -- distinguishes a genuine LIFT_HOLDING from a safety freeze, since both land in the same state
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
 
 // Returns to idle from anywhere in the sequence (abort or success) --
@@ -1209,6 +1221,7 @@ bool startLiftSequence(int legToLift) {
   if (liftState != LIFT_IDLE) return false;
 
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // slow, careful motion for the whole sequence -- reset in abortLiftSequence()
+  liftTiltAborted = false;
   liftLegIdx = legToLift;
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {
@@ -1274,6 +1287,13 @@ bool startLower() {
 #define LIFT_TILT_ABORT_DEG 8.0 // trip point -- LEVEL_TOLERANCE_DEG (3deg) just means "not level", this means "actually going wrong"
 #define LIFT_TILT_CHECK_MS  50  // how often to poll the IMU while a sequence is active
 
+// Tighter than LIFT_TILT_ABORT_DEG on purpose: this is the "are we
+// actually stable enough to COMMIT to lifting a leg off the ground"
+// check, not the "is it actively falling over" check -- want to catch
+// a stance that's already leaning before removing one of its four
+// points of contact, not just once it's clearly too late.
+#define LIFT_PRELIFT_TILT_LIMIT_DEG 5.0
+
 unsigned long lastLiftTiltCheckMs = 0;
 
 // Halts a leg exactly where it is, mid-move or not -- re-issuing its
@@ -1305,6 +1325,7 @@ bool checkLiftTiltSafety() {
 
   freezeLeg(liftLegIdx);
   for (int k = 0; k < 3; k++) freezeLeg(liftStanceIdx[k]);
+  liftTiltAborted = true;
   liftState = LIFT_HOLDING; // existing 'lower' recovery path takes over from here
   return true;
 }
@@ -1345,9 +1366,22 @@ void updateLiftSequence() {
     // in body-local terms moves the body backward relative to it, and
     // vice versa, so shift each stance leg the opposite way to move
     // the body toward the shift point that maximizes real margin.
+    //
+    // REAR_KNEE_FOLD_EXPERIMENT: forces RL/RR onto the forward-fold
+    // elbow branch (see solveLegIK()'s forceBranch) instead of the
+    // default backward fold, for this same foot point -- same ground
+    // contact, same stability-margin math, just a different internal
+    // hip/knee combination. This is the concrete code-level meaning of
+    // "bring the rear knees inward a bit more": doesn't touch geometry
+    // at all, only which of the two valid joint configurations holds
+    // the stance. UNCONFIRMED whether this actually resists forward
+    // tipping better -- flash and watch the rear legs' fold direction
+    // during a plain lift_fl to check it moved the way expected before
+    // trusting it on a full step-place reach.
     for (int k = 0; k < 3; k++) {
       int i = liftStanceIdx[k];
-      if (!setFoot(i, liftStanceX[k] - bestShift, liftStanceY[k])) {
+      int forceBranch = (i == RL || i == RR) ? 1 : -1;
+      if (!setFoot(i, liftStanceX[k] - bestShift, liftStanceY[k], forceBranch)) {
         Serial.println("Lift aborted: weight-shift target unreachable.");
         abortLiftSequence();
         return;
@@ -1368,6 +1402,24 @@ void updateLiftSequence() {
       Serial.println("mm after shifting -- below the safety floor, not proceeding to lift.");
       abortLiftSequence();
       return;
+    }
+    // The margin check above is purely geometric (projected support
+    // triangle) -- it says the shift SHOULD be stable, not that the
+    // real robot IS level right now. All four feet are still grounded
+    // at this point, so it's cheap and safe to actually check with the
+    // IMU before committing to remove one of them.
+    {
+      float pitch, roll;
+      readMPU6050(pitch, roll);
+      if (fabs(pitch) > LIFT_PRELIFT_TILT_LIMIT_DEG || fabs(roll) > LIFT_PRELIFT_TILT_LIMIT_DEG) {
+        Serial.print("Lift aborted: body tilt pitch=");
+        Serial.print(pitch, 1);
+        Serial.print(" roll=");
+        Serial.print(roll, 1);
+        Serial.println(" already exceeds the pre-lift stability check -- not safe to lift from this stance.");
+        abortLiftSequence();
+        return;
+      }
     }
     // Tuck: bring the foot toward directly under the hip (x=0) while
     // raising it clear of the ground -- keeps the leg as close to the
@@ -1450,7 +1502,11 @@ void updateLiftSequence() {
 void updateAutoStep() {
   if (autoStepState != AUTO_PLACING) return;
   if (liftState == LIFT_HOLDING) {
-    Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
+    if (liftTiltAborted) {
+      Serial.println("Auto step placement ABORTED -- tilt safety triggered mid-sequence, foot NOT reliably placed. Send 'lower' to retract.");
+    } else {
+      Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
+    }
     autoStepState = AUTO_IDLE;
   } else if (liftState == LIFT_IDLE) {
     // The sequence aborted somewhere along the way (support triangle

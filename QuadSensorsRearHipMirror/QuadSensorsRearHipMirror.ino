@@ -1394,7 +1394,15 @@ bool startLower() {
 // shift, uneven ground, or anything else that tips it, without needing
 // to know leg mass at all.
 // ============================================================
-#define LIFT_TILT_ABORT_DEG 8.0 // trip point -- LEVEL_TOLERANCE_DEG (3deg) just means "not level", this means "actually going wrong"
+// Trip point -- LEVEL_TOLERANCE_DEG (3deg) just means "not level", this
+// means "actually going wrong". Was 8.0, raised after a real hardware
+// run tripped this at pitch=4.3/roll=10.1 during a step-place attempt
+// on the verified pre-climb stance -- a stance already confirmed by
+// hand to carry real load and resist a push -- while the confirmed
+// genuine falls seen so far reached 35-41 degrees. 15 clears that
+// nuisance case with room to spare while staying well below the range
+// that's actually been an unrecoverable topple.
+#define LIFT_TILT_ABORT_DEG 15.0
 #define LIFT_TILT_CHECK_MS  50  // how often to poll the IMU while a sequence is active
 
 // Tighter than LIFT_TILT_ABORT_DEG on purpose: this is the "are we

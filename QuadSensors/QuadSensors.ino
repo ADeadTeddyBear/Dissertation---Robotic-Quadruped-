@@ -509,7 +509,7 @@ const int CROUCH_LOW_KNEE[NUM_HIPS] = {  30,  20, 240, 250 }; // FL, FR, RL, RR 
 // something to sanity-check by eye/tape measure, not trust blindly.
 // ------------------------------------------------------------
 #define TOF1_HEIGHT_ABOVE_HIP_MM 5.0 // measured: "a few mm" above the hip-pivot line
-#define TOF1_FORWARD_OFFSET_MM   3.0 // measured: ~3mm forward of the front hip pivots
+#define TOF1_FORWARD_OFFSET_MM   -60.0 // measured: 60mm BEHIND the front hip pivots (corrected from an earlier "~3mm forward" estimate)
 #define TOF1_HEIGHT_REF_LEG      FL  // any leg works (all move identically during the sweep); front leg chosen since ToF1 sits at the front
 
 // Real hip-to-ground height (mm) leg i would have at a given
@@ -523,6 +523,30 @@ float heightAtStandProgress(int i, float progress) {
   float theta1 = radians(hip - HIP_START[i]);
   float theta2 = radians(knee - KNEE_START[i]);
   return LEG_THIGH_MM * cos(theta1) + LEG_CALF_MM * cos(theta1 + theta2);
+}
+
+// Same interpolation as heightAtStandProgress(), but the x (forward)
+// component instead of y -- i.e. leg i's foot position relative to
+// its own hip, fore-aft, at a given standProgress.
+//
+// Since a planted foot doesn't move once on the ground (same
+// assumption the weight-shift/support-polygon code above already
+// relies on), a CHANGE in this value between two standProgress values
+// means the hip -- and the whole rigid chassis, including ToF1 -- has
+// physically translated by that same amount to compensate, not just
+// changed height. stand_sweep's scan always starts at 0% (see
+// startStepScan()), so the chassis's net shift since scan start at
+// any later progress p is footXAtStandProgress(leg, 0) -
+// footXAtStandProgress(leg, p) -- confirmed on hardware to be real
+// (not hypothetical): at the crossing point in one test run (41%)
+// this works out to ~17mm, a real but secondary contributor compared
+// to the ToF1 mounting-offset correction.
+float footXAtStandProgress(int i, float progress) {
+  float hip  = CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress;
+  float knee = CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress;
+  float theta1 = radians(hip - HIP_START[i]);
+  float theta2 = radians(knee - KNEE_START[i]);
+  return LEG_THIGH_MM * sin(theta1) + LEG_CALF_MM * sin(theta1 + theta2);
 }
 
 float standProgress = 0.0; // 0 = CROUCH_LOW stance, 1 = full standing
@@ -774,12 +798,28 @@ void updateStepScan() {
   lastScanStepMs = millis();
 
   if (!scanStepReported) {
+    // Self-motion compensation: the scan always starts at 0% (see
+    // startStepScan()), so the chassis (and ToF1 with it) has shifted
+    // footXAtStandProgress(leg, 0) - footXAtStandProgress(leg, standProgress)
+    // since the baseline was captured -- confirmed real on hardware,
+    // up to ~180mm across the full 0-100% range. Adding that back to
+    // the raw reading reconstructs what it would read if the chassis
+    // hadn't moved, isolating genuine external-object distance change
+    // from self-motion before comparing against the baseline. This is
+    // ONLY for the crossing comparison -- the final distance-to-hip
+    // estimate in printScanChange() already uses TOF1_FORWARD_OFFSET_MM,
+    // a fixed offset anchored to wherever the hip is RIGHT NOW, so it
+    // doesn't need (or want) this same correction applied again.
+    float chassisShiftMM = footXAtStandProgress(TOF1_HEIGHT_REF_LEG, 0.0)
+                         - footXAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress);
+    float compensatedToF1 = (float)tof1_mm + chassisShiftMM;
+
     bool crossed = false;
     if (scanBaselineToF1Ok) {
       if (!tof1_ok) {
         crossed = true; // target disappeared entirely -- cleared it with nothing behind
-      } else if (tof1_mm >= scanBaselineToF1 + STEP_CHANGE_THRESHOLD_MM) {
-        crossed = true; // cumulative drift from baseline crossed the threshold
+      } else if (compensatedToF1 >= (float)scanBaselineToF1 + STEP_CHANGE_THRESHOLD_MM) {
+        crossed = true; // cumulative drift from baseline, with self-motion compensated out, crossed the threshold
       }
     }
     if (crossed) {
@@ -823,7 +863,13 @@ void updateStepScan() {
   int curPercent = (int)round(standProgress * 100);
   if (curPercent >= nextScanReportPercent) {
     Serial.print(curPercent); Serial.print("%: ToF1=");
-    if (tof1_ok) { Serial.print(tof1_mm); Serial.println("mm"); } else { Serial.println("---"); }
+    if (tof1_ok) {
+      Serial.print(tof1_mm);
+      float shift = footXAtStandProgress(TOF1_HEIGHT_REF_LEG, 0.0) - footXAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress);
+      Serial.print("mm (self-motion compensated: "); Serial.print((float)tof1_mm + shift, 0); Serial.println("mm)");
+    } else {
+      Serial.println("---");
+    }
     nextScanReportPercent += SCAN_REPORT_STEP_PERCENT;
   }
 

@@ -175,6 +175,14 @@ void setKnee(int i, int angle) {
 #define KNEE_MOVE_DEG_PER_SEC 180.0
 #define MOVE_MIN_MS           50UL
 
+// Global slowdown knob for startHipMove()/startKneeMove() -- 1.0 is
+// full speed (the rates above), smaller values stretch move duration
+// proportionally. Used to make the lift/step-placement sequence move
+// more gradually than routine commands, the same way manually jogging
+// it in small careful steps avoids sudden weight transfer -- see
+// LIFT_MOVE_SPEED_SCALE below.
+float moveSpeedScale = 1.0;
+
 float hipMoveFrom[NUM_HIPS], hipMoveTo[NUM_HIPS];
 unsigned long hipMoveStartMs[NUM_HIPS], hipMoveDurationMs[NUM_HIPS];
 
@@ -207,14 +215,14 @@ void startHipMove(int i, int angle) {
   hipMoveFrom[i] = hipPos[i];
   hipMoveTo[i]   = angle;
   hipMoveStartMs[i] = millis();
-  hipMoveDurationMs[i] = max((unsigned long)(fabs(angle - hipPos[i]) / HIP_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
+  hipMoveDurationMs[i] = max((unsigned long)(fabs(angle - hipPos[i]) / (HIP_MOVE_DEG_PER_SEC * moveSpeedScale) * 1000.0), MOVE_MIN_MS);
 }
 
 void startKneeMove(int i, int angle) {
   kneeMoveFrom[i] = kneePos[i];
   kneeMoveTo[i]   = angle;
   kneeMoveStartMs[i] = millis();
-  kneeMoveDurationMs[i] = max((unsigned long)(fabs(angle - kneePos[i]) / KNEE_MOVE_DEG_PER_SEC * 1000.0), MOVE_MIN_MS);
+  kneeMoveDurationMs[i] = max((unsigned long)(fabs(angle - kneePos[i]) / (KNEE_MOVE_DEG_PER_SEC * moveSpeedScale) * 1000.0), MOVE_MIN_MS);
 }
 
 // Steps every in-progress move forward -- call every loop() pass.
@@ -1145,6 +1153,16 @@ void findBestStabilityShift(float bx[3], float by[3], float &bestShiftOut, float
 // on top of the extra weight-shift slack a taller stance leaves.
 #define LIFT_STAND_TARGET_PROGRESS 0.9
 
+// The whole lift/step-placement sequence moves at this fraction of
+// normal servo speed (see moveSpeedScale) -- confirmed manually that a
+// slow, careful, incremental approach is what actually gets a foot
+// onto a step without tipping; this is the automated equivalent of
+// that same care, not just the geometry alone. Applies to every phase
+// (raise, shift, tuck, clear, reach, and the retract path back down),
+// not just the reach itself, since the shift and raise are just as
+// capable of upsetting balance if done abruptly.
+#define LIFT_MOVE_SPEED_SCALE 0.3
+
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 int liftLegIdx = -1;
@@ -1153,6 +1171,15 @@ float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the sh
 float liftOrigX, liftOrigY;           // the lifted leg's own foot position before the shift, to restore on lower
 bool  liftIsStepPlace = false;
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
+
+// Returns to idle from anywhere in the sequence (abort or success) --
+// centralizing this so moveSpeedScale can never be left slow after
+// the sequence ends, forgotten in one abort path but not another.
+void abortLiftSequence() {
+  liftState = LIFT_IDLE;
+  liftLegIdx = -1;
+  moveSpeedScale = 1.0;
+}
 
 // The elevated Y used for the horizontal CLEAR/RETRACT traverses:
 // whichever is more elevated (smaller y) of the plain ground-clearance
@@ -1181,6 +1208,7 @@ bool legMoveDone(int i) {
 bool startLiftSequence(int legToLift) {
   if (liftState != LIFT_IDLE) return false;
 
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // slow, careful motion for the whole sequence -- reset in abortLiftSequence()
   liftLegIdx = legToLift;
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {
@@ -1252,8 +1280,7 @@ void updateLiftSequence() {
       Serial.print("mm, below the ");
       Serial.print(MIN_STABILITY_MARGIN_MM, 0);
       Serial.println("mm safety floor -- not attempting a shift from this stance.");
-      liftState = LIFT_IDLE;
-      liftLegIdx = -1;
+      abortLiftSequence();
       return;
     }
 
@@ -1265,8 +1292,7 @@ void updateLiftSequence() {
       int i = liftStanceIdx[k];
       if (!setFoot(i, liftStanceX[k] - bestShift, liftStanceY[k])) {
         Serial.println("Lift aborted: weight-shift target unreachable.");
-        liftState = LIFT_IDLE;
-        liftLegIdx = -1;
+        abortLiftSequence();
         return;
       }
     }
@@ -1283,8 +1309,7 @@ void updateLiftSequence() {
       Serial.print("Lift aborted: settled stability margin is ");
       Serial.print(settledMargin, 0);
       Serial.println("mm after shifting -- below the safety floor, not proceeding to lift.");
-      liftState = LIFT_IDLE;
-      liftLegIdx = -1;
+      abortLiftSequence();
       return;
     }
     // Tuck: bring the foot toward directly under the hip (x=0) while
@@ -1292,8 +1317,7 @@ void updateLiftSequence() {
     // body as possible while airborne, rather than swinging out first.
     if (!setFoot(liftLegIdx, 0, liftOrigY - LEG_LIFT_MM)) {
       Serial.println("Lift aborted: tuck-raise target unreachable.");
-      liftState = LIFT_IDLE;
-      liftLegIdx = -1;
+      abortLiftSequence();
       return;
     }
     liftState = LIFT_TUCK;
@@ -1307,8 +1331,7 @@ void updateLiftSequence() {
       // descends to tread height.
       if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY())) {
         Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
-        liftState = LIFT_IDLE;
-        liftLegIdx = -1;
+        abortLiftSequence();
         return;
       }
       liftState = LIFT_CLEAR;
@@ -1356,8 +1379,7 @@ void updateLiftSequence() {
     for (int k = 0; k < 3; k++) allDone = allDone && legMoveDone(liftStanceIdx[k]);
     if (!allDone) return;
     Serial.println("Leg lowered, stance restored.");
-    liftState = LIFT_IDLE;
-    liftLegIdx = -1;
+    abortLiftSequence(); // successful completion, not actually an abort -- just reuses the same "return to idle, reset speed" bookkeeping
   }
 }
 

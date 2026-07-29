@@ -925,7 +925,7 @@ void updateStepScan() {
         if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
           autoStepState = AUTO_PLACING;
         } else {
-          Serial.println("Auto step placement could not start (unreachable weight-shift at this stance).");
+          Serial.println("Auto step placement could not start -- a lift/step sequence is already in progress (liftState != LIFT_IDLE). If the last attempt ended in a hold or a safety abort, send 'lower' first -- manually jogging hip_xx/knee_xx does NOT reset this.");
         }
       }
       return;

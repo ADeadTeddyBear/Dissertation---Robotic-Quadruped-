@@ -712,16 +712,24 @@ bool scanBaselineToF1Ok = false;
 bool scanStepReported = false;
 
 // ------------------------------------------------------------
-// AUTO-STEP: once stand_sweep finds a crossing, automatically finish
-// standing and attempt to place a foot on it -- no manual step_scan_*
-// needed. Runs as its own small state machine (checked every loop()
-// pass, like the scan/lift sequences) rather than blocking, since
-// everything here is async servo motion.
+// AUTO-STEP: once stand_sweep finds a crossing (and it passes the
+// reachability sanity check in printScanChange()), automatically
+// attempt to place a foot on it -- no manual step_scan_* needed. Runs
+// as its own small state machine (checked every loop() pass, like the
+// scan/lift sequences) rather than blocking, since everything here is
+// async servo motion.
 //
 // Sequence: stop the scan the instant a crossing is found (no reason
-// to keep scanning once the answer's known) -> finish standing to
-// 100% (the lift/support-polygon math assumes a normal full stance,
-// not wherever the sweep happened to stop) -> startPlaceOnStep().
+// to keep scanning once the answer's known) -> startPlaceOnStep()
+// directly from whatever stance the sweep happened to stop at.
+// Deliberately NOT a forced return to 100%/full stand first: at exactly
+// full leg extension (thigh+calf == max reach) there is zero slack for
+// the weight-shift's small per-leg nudge, so startLiftSequence() fails
+// every time from there regardless of the step estimate (confirmed on
+// hardware) -- lastCommandedHeight is kept in sync with wherever the
+// sweep stopped (see applyStandProgress()), so the reach/support-
+// polygon math is still correct without moving first.
+//
 // If the placement sequence aborts for any reason (unreachable
 // target, support triangle not achieved), this just reports it and
 // goes idle -- it does NOT retry or attempt a different leg.
@@ -732,7 +740,7 @@ bool scanStepReported = false;
 // ------------------------------------------------------------
 #define AUTO_STEP_LEG FL // which leg attempts the placement -- front leg, matches TOF1_HEIGHT_REF_LEG
 
-enum AutoStepState { AUTO_IDLE, AUTO_STANDING, AUTO_PLACING };
+enum AutoStepState { AUTO_IDLE, AUTO_PLACING };
 AutoStepState autoStepState = AUTO_IDLE;
 // updateAutoStep() itself is defined further down, after LiftState/
 // liftState (its enum/global declarations, not just function calls,
@@ -767,12 +775,31 @@ void printScanChange() {
   if (lastScanToF1Ok) {
     float stepHeightMM  = heightAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM;
     float stepForwardMM = (float)lastScanToF1 + TOF1_FORWARD_OFFSET_MM;
-    lastDetectedStepForwardMM = stepForwardMM;
-    lastDetectedStepHeightMM  = stepHeightMM;
-    lastDetectedStepValid = true;
     Serial.print("  -> estimated step: height~"); Serial.print(stepHeightMM, 0);
     Serial.print("mm at ~"); Serial.print(stepForwardMM, 0);
     Serial.println("mm forward of the hip. UNVALIDATED estimate -- sanity-check before trusting step_scan_*.");
+
+    // Hard physical ceiling -- thigh+calf is the leg's absolute max
+    // reach (270mm), full stop, regardless of body height. A forward
+    // estimate anywhere near that (a 20mm margin here) can't ever be
+    // placed on, so don't let auto-step/step_scan_* attempt it and
+    // fail confusingly -- flag it as what it is: the distance estimate
+    // itself is bad for this scan, most likely because the reading
+    // never actually plateaued (a real flat step face gives a roughly
+    // CONSTANT reading right up to the jump; a continuously climbing
+    // reading -- confirmed on hardware even against a single isolated
+    // box, not just a staircase -- means "last reading before the
+    // threshold trips" isn't measuring a stable face distance at all).
+    if (stepForwardMM > (LEG_THIGH_MM + LEG_CALF_MM) - 20.0) {
+      Serial.print("  -> REJECTED: ");
+      Serial.print(stepForwardMM, 0);
+      Serial.print("mm exceeds this leg's max possible reach ("); Serial.print(LEG_THIGH_MM + LEG_CALF_MM, 0);
+      Serial.println("mm) -- not usable, not stored. Distance estimate is unreliable for this scan, not just this leg's workspace.");
+    } else {
+      lastDetectedStepForwardMM = stepForwardMM;
+      lastDetectedStepHeightMM  = stepHeightMM;
+      lastDetectedStepValid = true;
+    }
   }
 }
 
@@ -787,6 +814,7 @@ void updateStepScan() {
     scanBaselineToF1 = tof1_mm;
     scanBaselineToF1Ok = tof1_ok;
     scanStepReported = false;
+    lastDetectedStepValid = false; // don't let a rejected/absent result this run reuse a stale prior scan's estimate
     lastScanStepMs = millis();
     nextScanReportPercent = 0;
     scanState = SCAN_STEPPING;
@@ -809,15 +837,25 @@ void updateStepScan() {
     if (crossed) {
       printScanChange();
       scanStepReported = true;
+      scanState = SCAN_IDLE; // found the crossing (or rejected the estimate) either way -- nothing left to scan for
       if (lastDetectedStepValid) {
-        // Found what we needed -- stop scanning, finish standing, and
-        // let updateAutoStep() take it from here.
-        scanState = SCAN_IDLE;
-        Serial.println("Stopping scan -- returning to full stand before auto-attempting placement...");
-        startStandMove(1.0);
-        autoStepState = AUTO_STANDING;
-        return;
+        // Attempt directly from the CURRENT stance -- not a forced
+        // return to 100%/full stand. At exactly full extension
+        // (thigh+calf == max reach), there is ZERO slack for the
+        // weight-shift's small per-leg nudge, so startLiftSequence()
+        // would fail every time regardless of the step estimate
+        // (confirmed on hardware). lastCommandedHeight is already
+        // kept in sync with wherever the sweep stopped (see
+        // applyStandProgress()), so the reach/support-polygon math is
+        // still correct from here -- no need to move first.
+        Serial.println("Auto-attempting step placement from current stance...");
+        if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
+          autoStepState = AUTO_PLACING;
+        } else {
+          Serial.println("Auto step placement could not start (unreachable weight-shift at this stance).");
+        }
       }
+      return;
     }
   }
   lastScanToF1 = tof1_mm;
@@ -1220,27 +1258,20 @@ void updateLiftSequence() {
 // See AUTO-STEP's enum/comment near the stand_sweep section above --
 // this function itself has to sit here, after LiftState/liftState, so
 // the LIFT_HOLDING/LIFT_IDLE checks below actually compile.
+// startPlaceOnStep() is called directly from updateStepScan() at the
+// moment a crossing is found (no forced return-to-stand first -- see
+// its comment), so this only ever needs to track the AUTO_PLACING
+// sequence through to completion or abort.
 void updateAutoStep() {
-  if (autoStepState == AUTO_STANDING) {
-    if (standMoveInProgress) return; // still finishing the return to full stand
-    Serial.println("At full stand -- auto-attempting step placement...");
-    if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
-      autoStepState = AUTO_PLACING;
-    } else {
-      Serial.println("Auto step placement could not start (already mid-sequence, or unreachable shift).");
-      autoStepState = AUTO_IDLE;
-    }
-
-  } else if (autoStepState == AUTO_PLACING) {
-    if (liftState == LIFT_HOLDING) {
-      Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
-      autoStepState = AUTO_IDLE;
-    } else if (liftState == LIFT_IDLE) {
-      // The sequence aborted somewhere along the way (support triangle
-      // check, an unreachable target) -- already reported by whichever
-      // step caused it; nothing more to do here.
-      autoStepState = AUTO_IDLE;
-    }
+  if (autoStepState != AUTO_PLACING) return;
+  if (liftState == LIFT_HOLDING) {
+    Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
+    autoStepState = AUTO_IDLE;
+  } else if (liftState == LIFT_IDLE) {
+    // The sequence aborted somewhere along the way (support triangle
+    // check, an unreachable target) -- already reported by whichever
+    // step caused it; nothing more to do here.
+    autoStepState = AUTO_IDLE;
   }
 }
 

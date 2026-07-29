@@ -280,7 +280,7 @@ void updateServoMotion() {
 // of that leg's workspace again.
 // ============================================================
 const float LEG_THIGH_MM = 165.0;
-const float LEG_CALF_MM  = 105.0;
+const float LEG_CALF_MM  = 150.0; // hip-to-knee measured 165mm, knee-to-ground (INCLUDING the wheel) measured 150mm -- corrected from an earlier 105mm that didn't include the wheel
 
 // Solves 2-link planar IK for leg i. (x, y) is the desired foot
 // position relative to that leg's hip pivot, in mm (x forward+, y
@@ -466,7 +466,7 @@ bool computeRearJointsForHeight(int i, float heightMM, int &hipOut, int &kneeOut
 // leave it sitting higher than commanded, not actually reaching
 // heightMM), the whole command is rejected and nothing moves, rather
 // than silently producing an uneven, non-level stance.
-float lastCommandedHeight = 270;
+float lastCommandedHeight = 315; // LEG_THIGH_MM + LEG_CALF_MM -- full extension, matches whatever those are currently set to
 
 bool setBodyHeight(float heightMM) {
   int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
@@ -804,7 +804,7 @@ void printScanChange() {
     Serial.println("mm forward of the hip. UNVALIDATED estimate -- sanity-check before trusting step_scan_*.");
 
     // Hard physical ceiling -- thigh+calf is the leg's absolute max
-    // reach (270mm), full stop, regardless of body height. A forward
+    // reach, full stop, regardless of body height. A forward
     // estimate anywhere near that (a 20mm margin here) can't ever be
     // placed on, so don't let auto-step/step_scan_* attempt it and
     // fail confusingly -- flag it as what it is: the distance estimate

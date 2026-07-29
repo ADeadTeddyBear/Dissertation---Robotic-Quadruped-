@@ -1262,32 +1262,25 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 
 // ============================================================
 // PRE-CLIMB STANCE (FL lift only)
-// Shaped after what manual testing showed works: rear legs (RL/RR)
-// tucked in close to directly under their own hip instead of
-// splayed out, front-right (FR) reaching forward to widen the
-// remaining support base toward the side FL is about to swing away
-// from. Commanded via setFoot()/solveLegIK() at whatever height the
-// body is ACTUALLY at right now (liftStanceY[], captured right after
-// the raise settles) rather than as fixed absolute joint angles --
-// an earlier version hardcoded the hand-jogged angles directly, which
-// broke on hardware because those angles were tuned at a different
-// body height than LIFT_RAISING's 90% raise settles at, leaving RL/FR
-// short of the actual ground. Going through the normal IK path instead
-// guarantees whatever foot position is requested is reachable AT the
-// current height, not some other height the angles happened to imply.
-// Starting values -- tune PRECLIMB_FR_FORWARD_X from testing.
-// NOTE: at LIFT_STAND_TARGET_PROGRESS (0.9), FR's foot is already at
-// ~312mm of its 315mm max reach -- angle-based progress interpolation
-// front-loads most of the reach growth, so 90% angle-progress is
-// already ~99% of max reach, leaving only ~44mm of forward slack at
-// that same height. 150mm (an earlier value) exceeded that and
-// aborted immediately as unreachable. 35mm stays safely inside the
-// real budget WITHOUT changing FR's height (avoids introducing a
-// height mismatch against the other legs, a lower-risk fix given how
-// many of these tests have ended in a tip).
+// Commanded as ABSOLUTE angles, not IK targets -- the analytic FK/IK
+// model has now produced a physically implausible result (foot above
+// its own hip) for THREE separate hand-verified rear-leg
+// configurations in a row, so it's demonstrably unreliable at the
+// large angles this stance actually needs (well past what the
+// small-angle IK derivation assumes). Trusting the model to reproduce
+// or verify this stance would just repeat that failure -- these are
+// the exact angles confirmed by hand to keep the chassis flat while
+// FL lifts. RESIDUAL RISK: these were tuned by hand, incrementally,
+// not necessarily from the same LIFT_STAND_TARGET_PROGRESS (90%) raise
+// height the automated sequence commits to first -- watch closely on
+// the first automated attempt in case that mismatch recurs.
 // ============================================================
-#define PRECLIMB_TUCK_X        0.0  // rear legs: directly under their own hip
-#define PRECLIMB_FR_FORWARD_X  35.0 // front-right: reach forward while FL climbs
+#define PRECLIMB_HIP_RL   90
+#define PRECLIMB_KNEE_RL  210
+#define PRECLIMB_HIP_RR   80
+#define PRECLIMB_KNEE_RR  245
+#define PRECLIMB_HIP_FR   80
+#define PRECLIMB_KNEE_FR  150
 
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
@@ -1297,6 +1290,7 @@ float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the sh
 float liftOrigX, liftOrigY;           // the lifted leg's own foot position before the shift, to restore on lower
 bool  liftIsStepPlace = false;
 bool  liftTiltAborted = false; // set by checkLiftTiltSafety() -- distinguishes a genuine LIFT_HOLDING from a safety freeze, since both land in the same state
+bool  liftUsingVerifiedStance = false; // true when LIFT_RAISING used the hardcoded PRECLIMB_* angles instead of the computed IK shift -- LIFT_SHIFTING skips the geometric margin check in that case, since the FK model is known unreliable at these angles
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
 
 // Returns to idle from anywhere in the sequence (abort or success) --
@@ -1337,6 +1331,7 @@ bool startLiftSequence(int legToLift) {
 
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // slow, careful motion for the whole sequence -- reset in abortLiftSequence()
   liftTiltAborted = false;
+  liftUsingVerifiedStance = false;
   liftLegIdx = legToLift;
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {
@@ -1471,36 +1466,18 @@ void updateLiftSequence() {
     }
 
     if (liftLegIdx == FL) {
-      // Pre-climb stance -- see PRECLIMB_* above. Rear legs tucked to
-      // directly under their own hip, FR reaching forward, all via
-      // normal setFoot()/IK at liftStanceY[] -- the height the body is
-      // ACTUALLY at right now, so this can't suffer the same
-      // height-mismatch bug the earlier hardcoded-angle version had.
-      float rlY = 0, rrY = 0, frY = 0;
-      for (int k = 0; k < 3; k++) {
-        if (liftStanceIdx[k] == RL) rlY = liftStanceY[k];
-        else if (liftStanceIdx[k] == RR) rrY = liftStanceY[k];
-        else if (liftStanceIdx[k] == FR) frY = liftStanceY[k];
-      }
-      // Check ALL three targets are reachable BEFORE commanding any of
-      // them -- setFoot() leaves a leg's servos untouched if its own
-      // target fails, but by then an earlier leg in this same list may
-      // already be moving. Checking-then-committing means either all
-      // three move together, or none do -- never a partial, asymmetric
-      // shift (confirmed on hardware: one rear leg moved while the
-      // other didn't, tripping the tilt safety net).
-      float rlHip, rlKnee, rrHip, rrKnee, frHip, frKnee;
-      bool ok = solveLegIK(RL, PRECLIMB_TUCK_X, rlY, rlHip, rlKnee) &&
-                solveLegIK(RR, PRECLIMB_TUCK_X, rrY, rrHip, rrKnee) &&
-                solveLegIK(FR, PRECLIMB_FR_FORWARD_X, frY, frHip, frKnee);
-      if (!ok) {
-        Serial.println("Lift aborted: pre-climb stance target unreachable.");
-        abortLiftSequence();
-        return;
-      }
-      setHip(RL, (int)round(rlHip));   setKnee(RL, (int)round(rlKnee));
-      setHip(RR, (int)round(rrHip));   setKnee(RR, (int)round(rrKnee));
-      setHip(FR, (int)round(frHip));   setKnee(FR, (int)round(frKnee));
+      // Hand-verified stance -- see PRECLIMB_* above. Commanded as
+      // absolute angles directly (not through setFoot()/IK), since the
+      // model that would validate an IK target has already proven
+      // unreliable at these angles. The geometric stability-margin
+      // check in LIFT_SHIFTING is skipped for the same reason
+      // (liftUsingVerifiedStance) -- the real IMU-based checks
+      // (checkLiftTiltSafety(), the pre-lift tilt gate) stay fully
+      // active regardless, since those measure the actual robot, not
+      // a model of it.
+      setHip(RL, PRECLIMB_HIP_RL);   setKnee(RL, PRECLIMB_KNEE_RL);
+      setHip(RR, PRECLIMB_HIP_RR);   setKnee(RR, PRECLIMB_KNEE_RR);
+      setHip(FR, PRECLIMB_HIP_FR);   setKnee(FR, PRECLIMB_KNEE_FR);
       unsigned long dur = 0;
       dur = max(dur, max(hipMoveDurationMs[RL], kneeMoveDurationMs[RL]));
       dur = max(dur, max(hipMoveDurationMs[FR], kneeMoveDurationMs[FR]));
@@ -1508,6 +1485,7 @@ void updateLiftSequence() {
       hipMoveDurationMs[RL] = kneeMoveDurationMs[RL] = dur;
       hipMoveDurationMs[FR] = kneeMoveDurationMs[FR] = dur;
       hipMoveDurationMs[RR] = kneeMoveDurationMs[RR] = dur;
+      liftUsingVerifiedStance = true;
       liftState = LIFT_SHIFTING;
       return;
     }
@@ -1556,7 +1534,12 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_SHIFTING) {
     for (int k = 0; k < 3; k++) if (!legMoveDone(liftStanceIdx[k])) return;
-    {
+    // Skipped for the verified pre-climb stance -- footBodyPosition()'s
+    // forward-kinematics model has proven unreliable (implausible
+    // above-hip results) at the large angles that stance uses, so
+    // trusting it here would risk a false abort on a stance already
+    // confirmed by hand.
+    if (!liftUsingVerifiedStance) {
       float ax, ay, bx2, by2, cx, cy;
       footBodyPosition(liftStanceIdx[0], ax, ay);
       footBodyPosition(liftStanceIdx[1], bx2, by2);

@@ -1308,8 +1308,65 @@ bool startLower() {
   return true;
 }
 
+// ============================================================
+// LIFT-SEQUENCE TILT SAFETY NET
+// The stability math above (stabilityMargin()/findBestStabilityShift())
+// assumes the body's centre of mass stays fixed at the geometric
+// centre -- it doesn't model the lifted leg's OWN mass swinging
+// through TUCK/CLEAR/REACH, and that's not a small fraction: the legs
+// carry the servos and wheel motors, the heaviest parts of the robot.
+// Rather than try to precisely model that shift (which needs mass
+// numbers we don't have yet), watch the real consequence instead: if
+// the body actually starts tipping past a safe threshold, freeze every
+// leg exactly where it is, right now, and drop into LIFT_HOLDING so
+// the existing 'lower' recovery path takes over. This catches the CoM
+// shift, uneven ground, or anything else that tips it, without needing
+// to know leg mass at all.
+// ============================================================
+#define LIFT_TILT_ABORT_DEG 8.0 // trip point -- LEVEL_TOLERANCE_DEG (3deg) just means "not level", this means "actually going wrong"
+#define LIFT_TILT_CHECK_MS  50  // how often to poll the IMU while a sequence is active
+
+unsigned long lastLiftTiltCheckMs = 0;
+
+// Halts a leg exactly where it is, mid-move or not -- re-issuing its
+// own current angle as the move target makes updateServoMotion() settle
+// on it almost immediately (duration collapses to MOVE_MIN_MS since the
+// from/to angles are equal).
+void freezeLeg(int i) {
+  startHipMove(i, hipPos[i]);
+  startKneeMove(i, kneePos[i]);
+}
+
+// Polls pitch/roll (throttled to LIFT_TILT_CHECK_MS) and, if either
+// exceeds LIFT_TILT_ABORT_DEG, freezes all four legs in place and forces
+// the sequence into LIFT_HOLDING. Returns true if it did so -- caller
+// should skip its normal state-machine step for this tick when true.
+bool checkLiftTiltSafety() {
+  if (millis() - lastLiftTiltCheckMs < LIFT_TILT_CHECK_MS) return false;
+  lastLiftTiltCheckMs = millis();
+
+  float pitch, roll;
+  readMPU6050(pitch, roll);
+  if (fabs(pitch) < LIFT_TILT_ABORT_DEG && fabs(roll) < LIFT_TILT_ABORT_DEG) return false;
+
+  Serial.print("LIFT SAFETY ABORT: body tilt pitch=");
+  Serial.print(pitch, 1);
+  Serial.print(" roll=");
+  Serial.print(roll, 1);
+  Serial.println(" exceeded the safety threshold -- freezing all legs where they are.");
+
+  freezeLeg(liftLegIdx);
+  for (int k = 0; k < 3; k++) freezeLeg(liftStanceIdx[k]);
+  liftState = LIFT_HOLDING; // existing 'lower' recovery path takes over from here
+  return true;
+}
+
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
+  if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING) {
+    if (checkLiftTiltSafety()) return;
+  }
+
   if (liftState == LIFT_RAISING) {
     if (standMoveInProgress) return; // still rising to LIFT_STAND_TARGET_PROGRESS
 

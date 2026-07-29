@@ -664,8 +664,6 @@ bool  lastDetectedStepValid = false;
 enum ScanState { SCAN_IDLE, SCAN_TO_START, SCAN_STEPPING };
 ScanState scanState = SCAN_IDLE;
 unsigned long lastScanStepMs = 0;
-uint16_t lastScanToF1 = 0;
-bool lastScanToF1Ok = false;
 int nextScanReportPercent = 0;
 
 // Detection is against the scan's STARTING baseline, not the previous
@@ -740,13 +738,20 @@ void printScanChange() {
   Serial.print("  (possible step, cumulative delta >= "); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print("mm)");
   Serial.println();
 
-  // lastScanToF1 is the most recent reading BEFORE this crossing --
-  // i.e. the last time the beam was still hitting the step's front
-  // face -- so it's the right distance estimate, even though the
-  // crossing itself was detected against the baseline, not this value.
-  if (lastScanToF1Ok) {
+  // Use the scan's BASELINE (0%) for distance, not lastScanToF1 (the
+  // reading immediately before the flagged crossing). Confirmed on
+  // hardware against a real, tape-measured box: readings stay
+  // accurate to within a few mm through most of the climb (e.g. 20%
+  // and 30% both landed within 5mm of the true distance), but by the
+  // time the cumulative-drift threshold actually trips, the beam has
+  // already been partway into the transition for several percent --
+  // lastScanToF1 at that point can be 100mm+ off, already contaminated
+  // by whatever's behind the step. The baseline is captured before any
+  // climbing has started by definition, so it's the reading least
+  // likely to already be mid-transition.
+  if (scanBaselineToF1Ok) {
     float stepHeightMM  = heightAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM;
-    float stepForwardMM = (float)lastScanToF1 + TOF1_FORWARD_OFFSET_MM;
+    float stepForwardMM = (float)scanBaselineToF1 + TOF1_FORWARD_OFFSET_MM;
     Serial.print("  -> estimated step: height~"); Serial.print(stepHeightMM, 0);
     Serial.print("mm at ~"); Serial.print(stepForwardMM, 0);
     Serial.println("mm forward of the hip. UNVALIDATED estimate -- sanity-check before trusting step_scan_*.");
@@ -781,8 +786,6 @@ void updateStepScan() {
 
   if (scanState == SCAN_TO_START) {
     if (standMoveInProgress) return; // still moving to 0%
-    lastScanToF1 = tof1_mm;
-    lastScanToF1Ok = tof1_ok;
     scanBaselineToF1 = tof1_mm;
     scanBaselineToF1Ok = tof1_ok;
     scanStepReported = false;
@@ -846,8 +849,6 @@ void updateStepScan() {
       return;
     }
   }
-  lastScanToF1 = tof1_mm;
-  lastScanToF1Ok = tof1_ok;
 
   // Heartbeat trace every SCAN_REPORT_STEP_PERCENT -- a scan that never
   // crosses STEP_CHANGE_THRESHOLD_MM prints NOTHING otherwise (which is

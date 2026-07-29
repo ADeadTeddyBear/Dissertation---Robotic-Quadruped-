@@ -844,16 +844,13 @@ void updateStepScan() {
       scanStepReported = true;
       scanState = SCAN_IDLE; // found the crossing (or rejected the estimate) either way -- nothing left to scan for
       if (lastDetectedStepValid) {
-        // Attempt directly from the CURRENT stance -- not a forced
-        // return to 100%/full stand. At exactly full extension
-        // (thigh+calf == max reach), there is ZERO slack for the
-        // weight-shift's small per-leg nudge, so startLiftSequence()
-        // would fail every time regardless of the step estimate
-        // (confirmed on hardware). lastCommandedHeight is already
-        // kept in sync with wherever the sweep stopped (see
-        // applyStandProgress()), so the reach/support-polygon math is
-        // still correct from here -- no need to move first.
-        Serial.println("Auto-attempting step placement from current stance...");
+        // startLiftSequence() (called via startPlaceOnStep()) now
+        // raises to LIFT_STAND_TARGET_PROGRESS itself before shifting --
+        // lastCommandedHeight is kept in sync with wherever the sweep
+        // stopped (see applyStandProgress()), so the reach/support-
+        // polygon math is still correct regardless of the stance this
+        // was triggered from.
+        Serial.println("Auto-attempting step placement...");
         if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
           autoStepState = AUTO_PLACING;
         } else {
@@ -1137,7 +1134,18 @@ void findBestStabilityShift(float bx[3], float by[3], float &bestShiftOut, float
 #define LEG_LIFT_MM 30.0        // conservative -- thighs should not fully lift yet
 #define STEP_CLEAR_MARGIN_MM 20.0 // extra clearance above the step's own top surface during the horizontal traverse
 
-enum LiftState { LIFT_IDLE, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
+// Every lift/step-placement now raises to a NEAR-full stand first
+// (not exactly 1.0 -- that's the same zero-slack extreme that broke
+// the weight-shift originally, since thigh+calf == max reach exactly
+// at 100%). Confirmed by hand: standing taller shrinks how much the
+// swinging leg has to additionally extend to reach a given step
+// (targetY = bodyHeight - stepHeight gets smaller as bodyHeight grows
+// toward the step's own height), keeping its mass on a shorter lever
+// arm throughout TUCK/CLEAR/REACH -- less leverage to tip the body,
+// on top of the extra weight-shift slack a taller stance leaves.
+#define LIFT_STAND_TARGET_PROGRESS 0.9
+
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 int liftLegIdx = -1;
 int liftStanceIdx[3];
@@ -1163,49 +1171,26 @@ bool legMoveDone(int i) {
   return hipDone && kneeDone;
 }
 
-// Common weight-shift + bookkeeping shared by startLift() and
-// startPlaceOnStep(). Returns false without doing anything if a
-// sequence is already in progress. NOTE: if a stance leg's shift turns
-// out to be unreachable partway through, the legs before it in the
-// loop will already have been commanded -- this doesn't roll those back.
+// Common bookkeeping shared by startLift() and startPlaceOnStep().
+// Only records which leg is being lifted and kicks off the raise to
+// LIFT_STAND_TARGET_PROGRESS -- the actual weight-shift computation
+// happens once that settles (see the LIFT_RAISING case in
+// updateLiftSequence()), since it needs the POST-raise foot positions,
+// not whatever they were at the stance this was called from. Returns
+// false without doing anything if a sequence is already in progress.
 bool startLiftSequence(int legToLift) {
   if (liftState != LIFT_IDLE) return false;
 
-  legForwardKinematics(legToLift, liftOrigX, liftOrigY);
-
+  liftLegIdx = legToLift;
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {
     if (i == legToLift) continue;
     liftStanceIdx[n] = i;
-    legForwardKinematics(i, liftStanceX[n], liftStanceY[n]);
     n++;
   }
 
-  float bx[3], by[3];
-  for (int k = 0; k < 3; k++) footBodyPosition(liftStanceIdx[k], bx[k], by[k]);
-
-  float bestShift, bestMargin;
-  findBestStabilityShift(bx, by, bestShift, bestMargin);
-  if (bestMargin < MIN_STABILITY_MARGIN_MM) {
-    Serial.print("Lift aborted: best achievable stability margin is ");
-    Serial.print(bestMargin, 0);
-    Serial.print("mm, below the ");
-    Serial.print(MIN_STABILITY_MARGIN_MM, 0);
-    Serial.println("mm safety floor -- not attempting a shift from this stance.");
-    return false;
-  }
-
-  // A planted foot is fixed on the ground -- commanding it "forward"
-  // in body-local terms moves the body backward relative to it, and
-  // vice versa, so shift each stance leg the opposite way to move
-  // the body toward the shift point that maximizes real margin.
-  for (int k = 0; k < 3; k++) {
-    int i = liftStanceIdx[k];
-    if (!setFoot(i, liftStanceX[k] - bestShift, liftStanceY[k])) return false;
-  }
-
-  liftLegIdx = legToLift;
-  liftState = LIFT_SHIFTING;
+  startStandMove(LIFT_STAND_TARGET_PROGRESS); // no-op if already there/close, or already moving
+  liftState = LIFT_RAISING;
   return true;
 }
 
@@ -1245,7 +1230,49 @@ bool startLower() {
 
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
-  if (liftState == LIFT_SHIFTING) {
+  if (liftState == LIFT_RAISING) {
+    if (standMoveInProgress) return; // still rising to LIFT_STAND_TARGET_PROGRESS
+
+    // NOW capture foot positions -- after the raise, not before it --
+    // since standing taller moves every foot's position relative to
+    // its hip (see applyStandProgress()/heightAtStandProgress()).
+    legForwardKinematics(liftLegIdx, liftOrigX, liftOrigY);
+    for (int k = 0; k < 3; k++) {
+      legForwardKinematics(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
+    }
+
+    float bx[3], by[3];
+    for (int k = 0; k < 3; k++) footBodyPosition(liftStanceIdx[k], bx[k], by[k]);
+
+    float bestShift, bestMargin;
+    findBestStabilityShift(bx, by, bestShift, bestMargin);
+    if (bestMargin < MIN_STABILITY_MARGIN_MM) {
+      Serial.print("Lift aborted: best achievable stability margin is ");
+      Serial.print(bestMargin, 0);
+      Serial.print("mm, below the ");
+      Serial.print(MIN_STABILITY_MARGIN_MM, 0);
+      Serial.println("mm safety floor -- not attempting a shift from this stance.");
+      liftState = LIFT_IDLE;
+      liftLegIdx = -1;
+      return;
+    }
+
+    // A planted foot is fixed on the ground -- commanding it "forward"
+    // in body-local terms moves the body backward relative to it, and
+    // vice versa, so shift each stance leg the opposite way to move
+    // the body toward the shift point that maximizes real margin.
+    for (int k = 0; k < 3; k++) {
+      int i = liftStanceIdx[k];
+      if (!setFoot(i, liftStanceX[k] - bestShift, liftStanceY[k])) {
+        Serial.println("Lift aborted: weight-shift target unreachable.");
+        liftState = LIFT_IDLE;
+        liftLegIdx = -1;
+        return;
+      }
+    }
+    liftState = LIFT_SHIFTING;
+
+  } else if (liftState == LIFT_SHIFTING) {
     for (int k = 0; k < 3; k++) if (!legMoveDone(liftStanceIdx[k])) return;
     float ax, ay, bx2, by2, cx, cy;
     footBodyPosition(liftStanceIdx[0], ax, ay);
@@ -1592,9 +1619,9 @@ void handleCommand(String input) {
   } else if (input == "lift_fl" || input == "lift_fr" || input == "lift_rl" || input == "lift_rr") {
     int legIdx = (input == "lift_fl") ? FL : (input == "lift_fr") ? FR : (input == "lift_rl") ? RL : RR;
     if (startLift(legIdx)) {
-      Serial.println("Shifting weight before lift...");
+      Serial.println("Raising to a stable stance before lift...");
     } else {
-      Serial.println("Cannot start lift (already mid-sequence, or unreachable shift).");
+      Serial.println("Cannot start lift (already mid-sequence).");
     }
 
   } else if (input.startsWith("step_fl ") || input.startsWith("step_fr ") ||
@@ -1608,9 +1635,9 @@ void handleCommand(String input) {
       float forwardMM = rest.substring(0, sep).toFloat();
       float heightMM  = rest.substring(sep + 1).toFloat();
       if (startPlaceOnStep(legIdx, forwardMM, heightMM)) {
-        Serial.println("Shifting weight before step placement...");
+        Serial.println("Raising to a stable stance before step placement...");
       } else {
-        Serial.println("Cannot start step placement (already mid-sequence, or unreachable shift).");
+        Serial.println("Cannot start step placement (already mid-sequence).");
       }
     } else {
       Serial.println("Usage: step_fl/fr/rl/rr <forward_mm> <step_height_mm>");
@@ -1626,9 +1653,9 @@ void handleCommand(String input) {
       Serial.print("Using last scan estimate: height~"); Serial.print(lastDetectedStepHeightMM, 0);
       Serial.print("mm at ~"); Serial.print(lastDetectedStepForwardMM, 0); Serial.println("mm forward.");
       if (startPlaceOnStep(legIdx, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
-        Serial.println("Shifting weight before step placement...");
+        Serial.println("Raising to a stable stance before step placement...");
       } else {
-        Serial.println("Cannot start step placement (already mid-sequence, or unreachable shift).");
+        Serial.println("Cannot start step placement (already mid-sequence).");
       }
     }
 

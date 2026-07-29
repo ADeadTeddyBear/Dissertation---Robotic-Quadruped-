@@ -1430,15 +1430,25 @@ void updateLiftSequence() {
         else if (liftStanceIdx[k] == RR) rrY = liftStanceY[k];
         else if (liftStanceIdx[k] == FR) frY = liftStanceY[k];
       }
-      bool ok = true;
-      ok &= setFoot(RL, PRECLIMB_TUCK_X, rlY);
-      ok &= setFoot(RR, PRECLIMB_TUCK_X, rrY);
-      ok &= setFoot(FR, PRECLIMB_FR_FORWARD_X, frY);
+      // Check ALL three targets are reachable BEFORE commanding any of
+      // them -- setFoot() leaves a leg's servos untouched if its own
+      // target fails, but by then an earlier leg in this same list may
+      // already be moving. Checking-then-committing means either all
+      // three move together, or none do -- never a partial, asymmetric
+      // shift (confirmed on hardware: one rear leg moved while the
+      // other didn't, tripping the tilt safety net).
+      float rlHip, rlKnee, rrHip, rrKnee, frHip, frKnee;
+      bool ok = solveLegIK(RL, PRECLIMB_TUCK_X, rlY, rlHip, rlKnee) &&
+                solveLegIK(RR, PRECLIMB_TUCK_X, rrY, rrHip, rrKnee) &&
+                solveLegIK(FR, PRECLIMB_FR_FORWARD_X, frY, frHip, frKnee);
       if (!ok) {
         Serial.println("Lift aborted: pre-climb stance target unreachable.");
         abortLiftSequence();
         return;
       }
+      setHip(RL, (int)round(rlHip));   setKnee(RL, (int)round(rlKnee));
+      setHip(RR, (int)round(rrHip));   setKnee(RR, (int)round(rrKnee));
+      setHip(FR, (int)round(frHip));   setKnee(FR, (int)round(frKnee));
       unsigned long dur = 0;
       dur = max(dur, max(hipMoveDurationMs[RL], kneeMoveDurationMs[RL]));
       dur = max(dur, max(hipMoveDurationMs[FR], kneeMoveDurationMs[FR]));

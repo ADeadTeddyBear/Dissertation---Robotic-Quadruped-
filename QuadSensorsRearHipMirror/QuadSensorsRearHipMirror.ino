@@ -534,6 +534,14 @@ void applyStandProgress(float progress) {
     setHip(i, hip);
     setKnee(i, knee);
   }
+  // Keep lastCommandedHeight (the height-based systems' reference --
+  // updateBalance(), step-placement's target-Y math) in sync whenever
+  // THIS system moves the body, not just when the older setBodyHeight()
+  // does. Without this, reaching a stance via "stand"/stand_sweep left
+  // lastCommandedHeight stuck at its stale default/last setBodyHeight()
+  // value, silently feeding the wrong reference height into anything
+  // that assumed it tracked the robot's actual current stance.
+  lastCommandedHeight = heightAtStandProgress(TOF1_HEIGHT_REF_LEG, progress);
 }
 
 // Goes directly to the confirmed-low crouch -- this is what setup()
@@ -693,6 +701,54 @@ uint16_t scanBaselineToF1 = 0;
 bool scanBaselineToF1Ok = false;
 bool scanStepReported = false;
 
+// ------------------------------------------------------------
+// AUTO-STEP: once stand_sweep finds a crossing, automatically finish
+// standing and attempt to place a foot on it -- no manual step_scan_*
+// needed. Runs as its own small state machine (checked every loop()
+// pass, like the scan/lift sequences) rather than blocking, since
+// everything here is async servo motion.
+//
+// Sequence: stop the scan the instant a crossing is found (no reason
+// to keep scanning once the answer's known) -> finish standing to
+// 100% (the lift/support-polygon math assumes a normal full stance,
+// not wherever the sweep happened to stop) -> startPlaceOnStep().
+// If the placement sequence aborts for any reason (unreachable
+// target, support triangle not achieved), this just reports it and
+// goes idle -- it does NOT retry or attempt a different leg.
+//
+// UNTESTED ON HARDWARE, same as the rest of the step-placement path --
+// this removes the last manual checkpoint before a real attempt, so
+// watch closely on the first several runs.
+// ------------------------------------------------------------
+#define AUTO_STEP_LEG FL // which leg attempts the placement -- front leg, matches TOF1_HEIGHT_REF_LEG
+
+enum AutoStepState { AUTO_IDLE, AUTO_STANDING, AUTO_PLACING };
+AutoStepState autoStepState = AUTO_IDLE;
+
+void updateAutoStep() {
+  if (autoStepState == AUTO_STANDING) {
+    if (standMoveInProgress) return; // still finishing the return to full stand
+    Serial.println("At full stand -- auto-attempting step placement...");
+    if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
+      autoStepState = AUTO_PLACING;
+    } else {
+      Serial.println("Auto step placement could not start (already mid-sequence, or unreachable shift).");
+      autoStepState = AUTO_IDLE;
+    }
+
+  } else if (autoStepState == AUTO_PLACING) {
+    if (liftState == LIFT_HOLDING) {
+      Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
+      autoStepState = AUTO_IDLE;
+    } else if (liftState == LIFT_IDLE) {
+      // The sequence aborted somewhere along the way (support triangle
+      // check, an unreachable target) -- already reported by whichever
+      // step caused it; nothing more to do here.
+      autoStepState = AUTO_IDLE;
+    }
+  }
+}
+
 // Starts the scan: goes to 0% first (if not already there), then
 // steps up to 100% in fine increments. Returns false if a scan or a
 // manual stand move is already in progress.
@@ -763,6 +819,15 @@ void updateStepScan() {
     if (crossed) {
       printScanChange();
       scanStepReported = true;
+      if (lastDetectedStepValid) {
+        // Found what we needed -- stop scanning, finish standing, and
+        // let updateAutoStep() take it from here.
+        scanState = SCAN_IDLE;
+        Serial.println("Stopping scan -- returning to full stand before auto-attempting placement...");
+        startStandMove(1.0);
+        autoStepState = AUTO_STANDING;
+        return;
+      }
     }
   }
   lastScanToF1 = tof1_mm;
@@ -1570,6 +1635,9 @@ void loop() {
 
   // Step any in-progress stand sweep forward
   updateStepScan();
+
+  // Step any in-progress auto-step (sweep-detected -> auto placement) forward
+  updateAutoStep();
 
   // Nudge toward level if self-balancing is enabled
   updateBalance();

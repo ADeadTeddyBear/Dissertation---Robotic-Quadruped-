@@ -1465,12 +1465,18 @@ void updateLiftSequence() {
       legForwardKinematics(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
     }
 
-    if (liftLegIdx == FL) {
-      // Verified pre-climb stance -- see PRECLIMB_* above. Command the
-      // exact hand-tuned angles directly instead of computing a shift
-      // through a forward-kinematics model already shown wrong for RR
-      // at this configuration. Duration-synced across all three like
-      // setFoot() does for one leg, so they arrive together.
+    // DISABLED: the verified pre-climb stance (PRECLIMB_* above) was
+    // commanded as ABSOLUTE joint angles, but LIFT_RAISING applies them
+    // AFTER raising the whole body to LIFT_STAND_TARGET_PROGRESS (90%)
+    // -- if the hand-tuned angles were found at a different body height
+    // than that raise settles at, the same angles don't reproduce the
+    // same foot-to-ground geometry, just the same angles at the wrong
+    // height. Confirmed on hardware: this left RL and FR short of the
+    // actual ground (dangling) instead of bearing weight as intended.
+    // Reverted to the computed shift below until the height mismatch
+    // is resolved -- don't re-enable this without pinning down exactly
+    // what body height/progress the verified angles were tuned at.
+    if (false && liftLegIdx == FL) {
       setHip(RL, PRECLIMB_HIP_RL);   setKnee(RL, PRECLIMB_KNEE_RL);
       setHip(FR, PRECLIMB_HIP_FR);   setKnee(FR, PRECLIMB_KNEE_FR);
       setHip(RR, PRECLIMB_HIP_RR);   setKnee(RR, PRECLIMB_KNEE_RR);

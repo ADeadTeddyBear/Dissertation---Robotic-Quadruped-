@@ -1062,6 +1062,15 @@ float stabilityMargin(float px, float py, float ax, float ay, float bx, float by
 #define STABILITY_SHIFT_SEARCH_RANGE_MM 250.0
 #define STABILITY_SHIFT_SEARCH_STEP_MM  2.0
 
+// Pure distance check, same reachability test solveLegIK() itself
+// applies -- used here to pre-screen candidate shifts so the one this
+// picks is guaranteed to actually succeed when setFoot() is called for
+// real, instead of finding out only after committing to it.
+bool footReachable(float localX, float localY) {
+  float d = sqrt(localX * localX + localY * localY);
+  return d <= (LEG_THIGH_MM + LEG_CALF_MM) && d >= fabs(LEG_THIGH_MM - LEG_CALF_MM);
+}
+
 // Searches for the single fore-aft shift (applied identically to all
 // three stance legs' body-frame X -- the only degree of freedom, since
 // these legs can't move laterally) that MAXIMIZES the body center's
@@ -1076,15 +1085,29 @@ float stabilityMargin(float px, float py, float ax, float ay, float bx, float by
 // ~55mm from the exact same starting geometry, confirmed by hand.
 //
 // bx[]/by[] are the 3 stance legs' CURRENT body-frame positions
-// (before any shift). A brute-force sweep rather than a closed-form
-// solve -- this only runs once per lift/step-placement start, not in
-// the control loop, so the cost is negligible, and it doesn't depend
-// on the worst-case-edge staying the same one throughout the search
-// the way a more clever approach might assume.
-void findBestStabilityShift(float bx[3], float by[3], float &bestShiftOut, float &bestMarginOut) {
+// (before any shift); lx[]/ly[] are the SAME three legs' CURRENT
+// positions in their own leg-local (hip-relative) frame -- needed
+// because the margin math and the reachability check operate in
+// different frames. Without the reachability screen, this could (and
+// on real hardware did) pick a shift that maximizes the support
+// triangle's margin on paper while pushing one stance leg's foot
+// target past its own physical reach -- "unreachable" at setFoot()
+// time, aborting a lift the geometry said was fine. A brute-force
+// sweep rather than a closed-form solve -- this only runs once per
+// lift/step-placement start, not in the control loop, so the cost is
+// negligible, and it doesn't depend on the worst-case-edge staying the
+// same one throughout the search the way a more clever approach might
+// assume. shift=0 (the legs' current, already-valid position) is
+// always reachable, so this never comes up empty.
+void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], float &bestShiftOut, float &bestMarginOut) {
   bestShiftOut = 0;
   bestMarginOut = -1.0;
   for (float shift = -STABILITY_SHIFT_SEARCH_RANGE_MM; shift <= STABILITY_SHIFT_SEARCH_RANGE_MM; shift += STABILITY_SHIFT_SEARCH_STEP_MM) {
+    if (!footReachable(lx[0] - shift, ly[0]) ||
+        !footReachable(lx[1] - shift, ly[1]) ||
+        !footReachable(lx[2] - shift, ly[2])) {
+      continue; // this shift is geometrically nice but physically impossible for at least one stance leg
+    }
     float margin = stabilityMargin(0, 0, bx[0] - shift, by[0], bx[1] - shift, by[1], bx[2] - shift, by[2]);
     if (margin > bestMarginOut) {
       bestMarginOut = margin;
@@ -1351,7 +1374,7 @@ void updateLiftSequence() {
     for (int k = 0; k < 3; k++) footBodyPosition(liftStanceIdx[k], bx[k], by[k]);
 
     float bestShift, bestMargin;
-    findBestStabilityShift(bx, by, bestShift, bestMargin);
+    findBestStabilityShift(bx, by, liftStanceX, liftStanceY, bestShift, bestMargin);
     if (bestMargin < MIN_STABILITY_MARGIN_MM) {
       Serial.print("Lift aborted: best achievable stability margin is ");
       Serial.print(bestMargin, 0);

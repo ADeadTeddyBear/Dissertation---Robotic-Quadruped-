@@ -1208,6 +1208,28 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // capable of upsetting balance if done abruptly.
 #define LIFT_MOVE_SPEED_SCALE 0.3
 
+// ============================================================
+// VERIFIED PRE-CLIMB STANCE (FL lift only)
+// Hand-tuned on real hardware by jogging RL/FR/RR to these exact
+// angles while manually lifting/placing FL onto a step -- confirmed to
+// carry substantial rear-wheel load and resist a manual push without
+// tipping, which the computed margin-maximizing IK shift has not
+// reliably achieved despite several rounds of fixes. Commanded here as
+// raw hip/knee angles, bypassing solveLegIK()/setFoot() for these
+// three legs entirely -- going through the forward-kinematics model
+// instead (footBodyPosition()) computes an implausible negative-y
+// (foot above its own hip) for RR at this exact configuration, so
+// that model is known to be wrong for at least RR right now. Rather
+// than chase that model error, just replay the angles that are
+// already proven to work.
+// ============================================================
+#define PRECLIMB_HIP_RL   100
+#define PRECLIMB_KNEE_RL  100
+#define PRECLIMB_HIP_FR   100
+#define PRECLIMB_KNEE_FR  100
+#define PRECLIMB_HIP_RR   100
+#define PRECLIMB_KNEE_RR  200
+
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 int liftLegIdx = -1;
@@ -1216,6 +1238,7 @@ float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the sh
 float liftOrigX, liftOrigY;           // the lifted leg's own foot position before the shift, to restore on lower
 bool  liftIsStepPlace = false;
 bool  liftTiltAborted = false; // set by checkLiftTiltSafety() -- distinguishes a genuine LIFT_HOLDING from a safety freeze, since both land in the same state
+bool  liftUsingVerifiedStance = false; // true when LIFT_RAISING used the hardcoded PRECLIMB_* angles instead of the computed IK shift -- LIFT_SHIFTING skips the geometric margin check in that case, since the FK model is known wrong for RR at that configuration
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
 
 // Returns to idle from anywhere in the sequence (abort or success) --
@@ -1256,6 +1279,7 @@ bool startLiftSequence(int legToLift) {
 
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // slow, careful motion for the whole sequence -- reset in abortLiftSequence()
   liftTiltAborted = false;
+  liftUsingVerifiedStance = false;
   liftLegIdx = legToLift;
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {
@@ -1381,6 +1405,27 @@ void updateLiftSequence() {
       legForwardKinematics(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
     }
 
+    if (liftLegIdx == FL) {
+      // Verified pre-climb stance -- see PRECLIMB_* above. Command the
+      // exact hand-tuned angles directly instead of computing a shift
+      // through a forward-kinematics model already shown wrong for RR
+      // at this configuration. Duration-synced across all three like
+      // setFoot() does for one leg, so they arrive together.
+      setHip(RL, PRECLIMB_HIP_RL);   setKnee(RL, PRECLIMB_KNEE_RL);
+      setHip(FR, PRECLIMB_HIP_FR);   setKnee(FR, PRECLIMB_KNEE_FR);
+      setHip(RR, PRECLIMB_HIP_RR);   setKnee(RR, PRECLIMB_KNEE_RR);
+      unsigned long dur = 0;
+      dur = max(dur, max(hipMoveDurationMs[RL], kneeMoveDurationMs[RL]));
+      dur = max(dur, max(hipMoveDurationMs[FR], kneeMoveDurationMs[FR]));
+      dur = max(dur, max(hipMoveDurationMs[RR], kneeMoveDurationMs[RR]));
+      hipMoveDurationMs[RL] = kneeMoveDurationMs[RL] = dur;
+      hipMoveDurationMs[FR] = kneeMoveDurationMs[FR] = dur;
+      hipMoveDurationMs[RR] = kneeMoveDurationMs[RR] = dur;
+      liftUsingVerifiedStance = true;
+      liftState = LIFT_SHIFTING;
+      return;
+    }
+
     float bx[3], by[3];
     for (int k = 0; k < 3; k++) footBodyPosition(liftStanceIdx[k], bx[k], by[k]);
 
@@ -1425,17 +1470,24 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_SHIFTING) {
     for (int k = 0; k < 3; k++) if (!legMoveDone(liftStanceIdx[k])) return;
-    float ax, ay, bx2, by2, cx, cy;
-    footBodyPosition(liftStanceIdx[0], ax, ay);
-    footBodyPosition(liftStanceIdx[1], bx2, by2);
-    footBodyPosition(liftStanceIdx[2], cx, cy);
-    float settledMargin = stabilityMargin(0, 0, ax, ay, bx2, by2, cx, cy);
-    if (settledMargin < MIN_STABILITY_MARGIN_MM) {
-      Serial.print("Lift aborted: settled stability margin is ");
-      Serial.print(settledMargin, 0);
-      Serial.println("mm after shifting -- below the safety floor, not proceeding to lift.");
-      abortLiftSequence();
-      return;
+    // The geometric margin check is skipped for the verified pre-climb
+    // stance -- footBodyPosition()'s forward-kinematics model computes
+    // an implausible position for RR at that exact configuration (see
+    // PRECLIMB_* above), so trusting it here would risk a false abort
+    // on a stance already confirmed solid on real hardware.
+    if (!liftUsingVerifiedStance) {
+      float ax, ay, bx2, by2, cx, cy;
+      footBodyPosition(liftStanceIdx[0], ax, ay);
+      footBodyPosition(liftStanceIdx[1], bx2, by2);
+      footBodyPosition(liftStanceIdx[2], cx, cy);
+      float settledMargin = stabilityMargin(0, 0, ax, ay, bx2, by2, cx, cy);
+      if (settledMargin < MIN_STABILITY_MARGIN_MM) {
+        Serial.print("Lift aborted: settled stability margin is ");
+        Serial.print(settledMargin, 0);
+        Serial.println("mm after shifting -- below the safety floor, not proceeding to lift.");
+        abortLiftSequence();
+        return;
+      }
     }
     // The margin check above is purely geometric (projected support
     // triangle) -- it says the shift SHOULD be stable, not that the

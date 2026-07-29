@@ -928,9 +928,20 @@ void updateStepScan() {
 // is always exactly its hip's fixed offset -- only X (fore-aft) can
 // be adjusted to shift the robot's weight.
 // ============================================================
-const float BODY_HALF_LENGTH_MM = 157.5; // half of 315mm front-to-rear hip spacing
+// Longitudinal distance from the body's center to the front hips and
+// to the rear hips, measured independently -- NOT assumed symmetric.
+// Both were 157.5mm (half of a 315mm front-to-rear spacing) until the
+// rear hips were moved closer to the front, to shrink how far a lifted
+// front leg's swing can shift the CoM before it exits the remaining
+// 3-leg support triangle (see the LIFT-SEQUENCE TILT SAFETY NET
+// comment -- catching a fall in progress is a stopgap; keeping the CoM
+// inside the triangle in the first place is the actual fix). Measure
+// fresh after any chassis change -- REAR_HIP_X_MM is the one that
+// changes here, FRONT_HIP_X_MM shouldn't need to.
+const float FRONT_HIP_X_MM = 157.5;
+const float REAR_HIP_X_MM  = 157.5; // TODO: update to the real measured value once the rear hips are physically relocated
 const float BODY_HALF_WIDTH_MM  = 102.5; // half of 205mm left-to-right hip spacing
-const float HIP_OFFSET_X[NUM_HIPS] = {  BODY_HALF_LENGTH_MM,  BODY_HALF_LENGTH_MM, -BODY_HALF_LENGTH_MM, -BODY_HALF_LENGTH_MM }; // FL,FR,RL,RR
+const float HIP_OFFSET_X[NUM_HIPS] = {  FRONT_HIP_X_MM,  FRONT_HIP_X_MM, -REAR_HIP_X_MM, -REAR_HIP_X_MM }; // FL,FR,RL,RR
 const float HIP_OFFSET_Y[NUM_HIPS] = {  BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM,   BODY_HALF_WIDTH_MM,  -BODY_HALF_WIDTH_MM };
 
 // ============================================================

@@ -1276,9 +1276,18 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // guarantees whatever foot position is requested is reachable AT the
 // current height, not some other height the angles happened to imply.
 // Starting values -- tune PRECLIMB_FR_FORWARD_X from testing.
+// NOTE: at LIFT_STAND_TARGET_PROGRESS (0.9), FR's foot is already at
+// ~312mm of its 315mm max reach -- angle-based progress interpolation
+// front-loads most of the reach growth, so 90% angle-progress is
+// already ~99% of max reach, leaving only ~44mm of forward slack at
+// that same height. 150mm (an earlier value) exceeded that and
+// aborted immediately as unreachable. 35mm stays safely inside the
+// real budget WITHOUT changing FR's height (avoids introducing a
+// height mismatch against the other legs, a lower-risk fix given how
+// many of these tests have ended in a tip).
 // ============================================================
-#define PRECLIMB_TUCK_X        0.0   // rear legs: directly under their own hip
-#define PRECLIMB_FR_FORWARD_X  150.0 // front-right: reach forward while FL climbs
+#define PRECLIMB_TUCK_X        0.0  // rear legs: directly under their own hip
+#define PRECLIMB_FR_FORWARD_X  35.0 // front-right: reach forward while FL climbs
 
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;

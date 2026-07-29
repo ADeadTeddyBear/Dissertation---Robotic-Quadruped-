@@ -523,6 +523,60 @@ float legHeightCorrection[NUM_HIPS] = {0, 0, 0, 0};
 const int CROUCH_LOW_HIP[NUM_HIPS]  = { 140, 140, 140, 140 }; // FL, FR, RL, RR -- confirmed by hand
 const int CROUCH_LOW_KNEE[NUM_HIPS] = {  30,  20, 240, 250 }; // FL, FR, RL, RR -- confirmed by hand
 
+// ------------------------------------------------------------
+// ToF1 -> step geometry. ToF1 is mounted fixed to the chassis (not a
+// leg), aimed level/forward -- confirmed by hand, not angled down. So
+// the beam itself doesn't sweep the ground: as stand_sweep changes
+// body height, ToF1's HEIGHT ABOVE THE GROUND changes while its beam
+// stays horizontal, so it's the sensor's height sweeping through
+// space, not its aim direction. Scanning crouch->stand raises the
+// sensor; while it's below the step's top, the beam hits the step's
+// front (riser) face at a roughly constant distance; the moment the
+// sensor rises above the step's height, the beam clears the top edge
+// and suddenly reads far (or nothing) -- that crossover is exactly
+// the jump stand_sweep already detects.
+//
+// That means, at the jump:
+//   step height  = (this leg's real hip-to-ground height at the
+//                   jump's standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM
+//   step forward = (the last close reading before the jump) +
+//                   TOF1_FORWARD_OFFSET_MM
+// "Real hip-to-ground height at a given standProgress" doesn't need
+// new calibration -- applyStandProgress() (right below) already
+// interpolates hip/knee ANGLE directly between two confirmed endpoints
+// (CROUCH_LOW and HIP_START/KNEE_START), so running that same
+// interpolated angle through the same trig legForwardKinematics() uses
+// gives the exact real height, not an approximation. That's also why
+// this block sits here, before applyStandProgress(): it needs
+// heightAtStandProgress() too, to keep lastCommandedHeight in sync.
+//
+// TOF1_HEIGHT_ABOVE_HIP_MM/TOF1_FORWARD_OFFSET_MM are rough hand
+// measurements ("a few mm" / "~3mm") -- refine with calipers if a
+// step attempt ends up consistently short/long by a small amount.
+//
+// UNVALIDATED: this is a hypothesis from the sensor's confirmed
+// mounting, not yet confirmed against a real known step -- the
+// toolbox test that motivated lowering STEP_CHANGE_THRESHOLD_MM never
+// produced a jump at all, so treat the first few estimates as
+// something to sanity-check by eye/tape measure, not trust blindly.
+// ------------------------------------------------------------
+#define TOF1_HEIGHT_ABOVE_HIP_MM 5.0 // measured: "a few mm" above the hip-pivot line
+#define TOF1_FORWARD_OFFSET_MM   3.0 // measured: ~3mm forward of the front hip pivots
+#define TOF1_HEIGHT_REF_LEG      FL  // any leg works (all move identically during the sweep); front leg chosen since ToF1 sits at the front
+
+// Real hip-to-ground height (mm) leg i would have at a given
+// standProgress, using the exact CROUCH_LOW<->HIP_START/KNEE_START
+// angle interpolation applyStandProgress() itself commands -- not an
+// approximation, since that interpolation IS what's actually driving
+// the servos during the sweep.
+float heightAtStandProgress(int i, float progress) {
+  float hip  = CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress;
+  float knee = CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress;
+  float theta1 = radians(hip - HIP_START[i]);
+  float theta2 = radians(knee - KNEE_START[i]);
+  return LEG_THIGH_MM * cos(theta1) + LEG_CALF_MM * cos(theta1 + theta2);
+}
+
 float standProgress = 0.0; // 0 = CROUCH_LOW stance, 1 = full standing
 
 void applyStandProgress(float progress) {
@@ -624,57 +678,13 @@ bool startStandMove(float targetProgress) {
 
 #define SCAN_REPORT_STEP_PERCENT 10 // heartbeat trace interval -- see note below
 
-// ------------------------------------------------------------
-// ToF1 -> step geometry. ToF1 is mounted fixed to the chassis (not a
-// leg), aimed level/forward -- confirmed by hand, not angled down. So
-// the beam itself doesn't sweep the ground: as stand_sweep changes
-// body height, ToF1's HEIGHT ABOVE THE GROUND changes while its beam
-// stays horizontal, so it's the sensor's height sweeping through
-// space, not its aim direction. Scanning crouch->stand raises the
-// sensor; while it's below the step's top, the beam hits the step's
-// front (riser) face at a roughly constant distance; the moment the
-// sensor rises above the step's height, the beam clears the top edge
-// and suddenly reads far (or nothing) -- that crossover is exactly
-// the jump stand_sweep already detects.
-//
-// That means, at the jump:
-//   step height  = (this leg's real hip-to-ground height at the
-//                   jump's standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM
-//   step forward = (the last close reading before the jump) +
-//                   TOF1_FORWARD_OFFSET_MM
-// "Real hip-to-ground height at a given standProgress" doesn't need
-// new calibration -- applyStandProgress() already interpolates hip/
-// knee ANGLE directly between two confirmed endpoints (CROUCH_LOW and
-// HIP_START/KNEE_START), so running that same interpolated angle
-// through the same trig legForwardKinematics() uses gives the exact
-// real height, not an approximation.
-//
-// TOF1_HEIGHT_ABOVE_HIP_MM/TOF1_FORWARD_OFFSET_MM are rough hand
-// measurements ("a few mm" / "~3mm") -- refine with calipers if a
-// step attempt ends up consistently short/long by a small amount.
-//
-// UNVALIDATED: this is a hypothesis from the sensor's confirmed
-// mounting, not yet confirmed against a real known step -- the
-// toolbox test that motivated lowering STEP_CHANGE_THRESHOLD_MM never
-// produced a jump at all, so treat the first few estimates as
-// something to sanity-check by eye/tape measure, not trust blindly.
-// ------------------------------------------------------------
-#define TOF1_HEIGHT_ABOVE_HIP_MM 5.0 // measured: "a few mm" above the hip-pivot line
-#define TOF1_FORWARD_OFFSET_MM   3.0 // measured: ~3mm forward of the front hip pivots
-#define TOF1_HEIGHT_REF_LEG      FL  // any leg works (all move identically during the sweep); front leg chosen since ToF1 sits at the front
-
-// Real hip-to-ground height (mm) leg i would have at a given
-// standProgress, using the exact CROUCH_LOW<->HIP_START/KNEE_START
-// angle interpolation applyStandProgress() itself commands -- not an
-// approximation, since that interpolation IS what's actually driving
-// the servos during the sweep.
-float heightAtStandProgress(int i, float progress) {
-  float hip  = CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress;
-  float knee = CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress;
-  float theta1 = radians(hip - HIP_START[i]);
-  float theta2 = radians(knee - KNEE_START[i]);
-  return LEG_THIGH_MM * cos(theta1) + LEG_CALF_MM * cos(theta1 + theta2);
-}
+// See the "ToF1 -> step geometry" block above applyStandProgress()
+// (TOF1_HEIGHT_ABOVE_HIP_MM/TOF1_FORWARD_OFFSET_MM/TOF1_HEIGHT_REF_LEG,
+// heightAtStandProgress()) -- moved there since applyStandProgress()
+// itself needs it too (to keep lastCommandedHeight in sync), and
+// #define/enum/global declarations, unlike functions, aren't
+// auto-prototyped by the Arduino builder -- they have to physically
+// precede their first use in the file.
 
 float lastDetectedStepForwardMM = 0, lastDetectedStepHeightMM = 0;
 bool  lastDetectedStepValid = false;
@@ -724,30 +734,10 @@ bool scanStepReported = false;
 
 enum AutoStepState { AUTO_IDLE, AUTO_STANDING, AUTO_PLACING };
 AutoStepState autoStepState = AUTO_IDLE;
-
-void updateAutoStep() {
-  if (autoStepState == AUTO_STANDING) {
-    if (standMoveInProgress) return; // still finishing the return to full stand
-    Serial.println("At full stand -- auto-attempting step placement...");
-    if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
-      autoStepState = AUTO_PLACING;
-    } else {
-      Serial.println("Auto step placement could not start (already mid-sequence, or unreachable shift).");
-      autoStepState = AUTO_IDLE;
-    }
-
-  } else if (autoStepState == AUTO_PLACING) {
-    if (liftState == LIFT_HOLDING) {
-      Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
-      autoStepState = AUTO_IDLE;
-    } else if (liftState == LIFT_IDLE) {
-      // The sequence aborted somewhere along the way (support triangle
-      // check, an unreachable target) -- already reported by whichever
-      // step caused it; nothing more to do here.
-      autoStepState = AUTO_IDLE;
-    }
-  }
-}
+// updateAutoStep() itself is defined further down, after LiftState/
+// liftState (its enum/global declarations, not just function calls,
+// need to physically precede it) -- see the LEG LIFT / STEP-PLACEMENT
+// SEQUENCE section below.
 
 // Starts the scan: goes to 0% first (if not already there), then
 // steps up to 100% in fine increments. Returns false if a scan or a
@@ -1224,6 +1214,33 @@ void updateLiftSequence() {
     Serial.println("Leg lowered, stance restored.");
     liftState = LIFT_IDLE;
     liftLegIdx = -1;
+  }
+}
+
+// See AUTO-STEP's enum/comment near the stand_sweep section above --
+// this function itself has to sit here, after LiftState/liftState, so
+// the LIFT_HOLDING/LIFT_IDLE checks below actually compile.
+void updateAutoStep() {
+  if (autoStepState == AUTO_STANDING) {
+    if (standMoveInProgress) return; // still finishing the return to full stand
+    Serial.println("At full stand -- auto-attempting step placement...");
+    if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
+      autoStepState = AUTO_PLACING;
+    } else {
+      Serial.println("Auto step placement could not start (already mid-sequence, or unreachable shift).");
+      autoStepState = AUTO_IDLE;
+    }
+
+  } else if (autoStepState == AUTO_PLACING) {
+    if (liftState == LIFT_HOLDING) {
+      Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
+      autoStepState = AUTO_IDLE;
+    } else if (liftState == LIFT_IDLE) {
+      // The sequence aborted somewhere along the way (support triangle
+      // check, an unreachable target) -- already reported by whichever
+      // step caused it; nothing more to do here.
+      autoStepState = AUTO_IDLE;
+    }
   }
 }
 

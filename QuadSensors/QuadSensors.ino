@@ -297,26 +297,40 @@ bool solveLegIK(int i, float x, float y, float &hipAngleOut, float &kneeAngleOut
   // Try both elbow solutions -- knee folded backward (toward the
   // chassis, matching a normal walking gait where the foot lifts by
   // folding the knee back and up) or forward -- and keep whichever
-  // leaves the calf closer to vertical (smaller |theta1 + theta2|,
-  // the calf's absolute angle from straight down). Branch 0 (backward
-  // fold) is tried first and kept on an exact tie, so already-tested
-  // forward-reaching targets keep today's behavior unchanged.
-  float bestHip = 0, bestKnee = 0, bestAbsFootAngle = -1;
+  // requires the SMALLER total change from the leg's current commanded
+  // angles (hipPos[i]/kneePos[i]), not whichever looks most vertical.
+  //
+  // Confirmed necessary on hardware: solving fresh for a nearby target
+  // (e.g. a small weight-shift nudge) with a pure "closest to
+  // vertical" tie-break can pick a branch that's mathematically valid
+  // but 100+ degrees of combined hip+knee rotation away from where the
+  // leg actually is -- for a rear leg mid-crouch, this snapped it into
+  // a completely different, uncommanded configuration instead of the
+  // small incremental move that was intended. Preferring continuity
+  // avoids that regardless of which region of the workspace the
+  // target falls in, and reproduces the same choice as the old
+  // heuristic for every already-tested forward-reaching case (a normal
+  // reach from a normal stance was never near a branch boundary to
+  // begin with). Branch 0 (backward fold) is tried first and kept on
+  // an exact tie.
+  float bestHip = 0, bestKnee = 0, bestAngleChange = -1;
   for (int branch = 0; branch < 2; branch++) {
     float theta2 = (branch == 0) ? -kneeMag : kneeMag;
     float k1 = LEG_THIGH_MM + LEG_CALF_MM * cos(theta2);
     float k2 = LEG_CALF_MM * sin(theta2);
     float theta1 = atan2(x, y) - atan2(k2, k1);
-    float absFootAngle = fabs(theta1 + theta2);
-    if (bestAbsFootAngle < 0 || absFootAngle < bestAbsFootAngle) {
-      bestAbsFootAngle = absFootAngle;
-      bestHip  = theta1;
-      bestKnee = theta2;
+    float hipCandidate  = degrees(theta1) + HIP_START[i];
+    float kneeCandidate = degrees(theta2) + KNEE_START[i];
+    float angleChange = fabs(hipCandidate - hipPos[i]) + fabs(kneeCandidate - kneePos[i]);
+    if (bestAngleChange < 0 || angleChange < bestAngleChange) {
+      bestAngleChange = angleChange;
+      bestHip  = hipCandidate;
+      bestKnee = kneeCandidate;
     }
   }
 
-  hipAngleOut  = degrees(bestHip) + HIP_START[i];
-  kneeAngleOut = degrees(bestKnee) + KNEE_START[i];
+  hipAngleOut  = bestHip;
+  kneeAngleOut = bestKnee;
   return true;
 }
 

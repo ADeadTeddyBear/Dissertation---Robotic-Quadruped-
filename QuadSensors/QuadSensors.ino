@@ -1237,6 +1237,14 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // on top of the extra weight-shift slack a taller stance leaves.
 #define LIFT_STAND_TARGET_PROGRESS 0.9
 
+// After the stance-leg shift settles (servos report done), hold there
+// for this long BEFORE checking stability and committing to the lift --
+// a servo reporting "done" only means it reached its commanded angle,
+// not that the chassis has stopped physically settling (residual
+// bounce/backlash from the shift). Checking the instant the servos
+// stop can pass a stance that hasn't actually finished moving yet.
+#define LIFT_SETTLE_DWELL_MS 3000
+
 // The whole lift/step-placement sequence moves at this fraction of
 // normal servo speed (see moveSpeedScale) -- confirmed manually that a
 // slow, careful, incremental approach is what actually gets a foot
@@ -1269,8 +1277,9 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define PRECLIMB_HIP_FR   80
 #define PRECLIMB_KNEE_FR  150
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
+unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
 int liftStanceIdx[3];
 float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the shift, to restore on lower
@@ -1529,21 +1538,23 @@ void updateClimbMoveTracking() {
 
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
-  // The reactive tilt-abort net is deliberately OFF during LIFT_RAISING
-  // and LIFT_SHIFTING -- confirmed on hardware that repositioning into
-  // the pre-climb stance produces real but harmless transient tilt
-  // (here: roll=15.9 right after "Stand target reached", tripping the
-  // net before the stance had even settled), the same way manually
-  // jogging into position never had anything watching for transient
-  // wobble mid-move -- only a single 'level' check once everything had
-  // actually settled. The pre-lift IMU gate at the end of LIFT_SHIFTING
-  // (LIFT_PRELIFT_TILT_LIMIT_DEG) is that same settled-state check,
-  // still fully active -- so a stance that's ACTUALLY unstable once
-  // settled still gets caught there, just not mid-reposition. The
-  // reactive net re-arms from LIFT_TUCK onward, where the real risk
-  // (FL's own mass swinging through the reach) actually lives.
+  // The reactive tilt-abort net is deliberately OFF during LIFT_RAISING,
+  // LIFT_SHIFTING, and LIFT_SETTLING -- confirmed on hardware that
+  // repositioning into the pre-climb stance produces real but harmless
+  // transient tilt (here: roll=15.9 right after "Stand target
+  // reached", tripping the net before the stance had even settled),
+  // the same way manually jogging into position never had anything
+  // watching for transient wobble mid-move -- only a single 'level'
+  // check once everything had actually settled. LIFT_SETTLING's own
+  // dwell-then-check (LIFT_SETTLE_DWELL_MS, then the pre-lift IMU gate)
+  // IS that same settled-state check, still fully active -- so a
+  // stance that's ACTUALLY unstable once settled is still caught
+  // there, just not mid-reposition. The reactive net re-arms from
+  // LIFT_TUCK onward, where the real risk (FL's own mass swinging
+  // through the reach) actually lives.
   if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
-      liftState != LIFT_RAISING && liftState != LIFT_SHIFTING) {
+      liftState != LIFT_RAISING && liftState != LIFT_SHIFTING &&
+      liftState != LIFT_SETTLING) {
     if (checkLiftTiltSafety()) return;
   }
 
@@ -1627,6 +1638,16 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_SHIFTING) {
     for (int k = 0; k < 3; k++) if (!legMoveDone(liftStanceIdx[k])) return;
+    // Servos reporting "done" only means they reached their commanded
+    // angle, not that the chassis has stopped physically settling --
+    // hold here for LIFT_SETTLE_DWELL_MS before trusting any stability
+    // check, rather than reading one the instant the servos stop.
+    liftSettleStartMs = millis();
+    liftState = LIFT_SETTLING;
+
+  } else if (liftState == LIFT_SETTLING) {
+    if (millis() - liftSettleStartMs < LIFT_SETTLE_DWELL_MS) return; // still holding, letting things settle
+
     // Skipped for the verified pre-climb stance -- footBodyPosition()'s
     // forward-kinematics model has proven unreliable (implausible
     // above-hip results) at the large angles that stance uses, so

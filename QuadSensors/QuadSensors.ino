@@ -18,6 +18,14 @@
 #include <Servo.h>
 #include <VL53L0X.h>
 
+// Declared this early so it's a known type wherever Arduino's
+// auto-generated function prototypes land (right after the
+// #includes, before anything else in the file) -- see the VERIFIED
+// CLIMB TIERS comment further down for what this is actually for.
+struct ClimbPose {
+  int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
+};
+
 // ============================================================
 // HIP SERVO PINS
 // ============================================================
@@ -1446,11 +1454,13 @@ bool checkLiftTiltSafety() {
 // solveLegIK()/setFoot() entirely for all four legs, the same
 // reasoning as the earlier PRECLIMB_* stance: the model cannot be
 // trusted to reproduce or verify poses at this angle range.
+//
+// (ClimbPose itself is declared near the top of the file, right after
+// the #includes -- Arduino auto-generates a forward declaration for
+// commandClimbPose() right after the #includes too, and that
+// declaration needs ClimbPose to already be a known type at that
+// point, not just here where it's actually used.)
 // ============================================================
-struct ClimbPose {
-  int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
-};
-
 const ClimbPose CLIMB_PREP_LOW  = {  95, 110,  95, 120,   0,  20,  10,  20 }; // Pitch -0.3 Roll 2.9 -> Level
 const ClimbPose CLIMB_LIFT_LOW  = { 200, 110,  92, 120,   0,  20,   0,  20 }; // Pitch  0.9 Roll 2.1 -> Level
 const ClimbPose CLIMB_PREP_MID  = {  92, 100,  92, 108,   0,  50,   0,  55 }; // Pitch  1.9 Roll 2.5 -> Level

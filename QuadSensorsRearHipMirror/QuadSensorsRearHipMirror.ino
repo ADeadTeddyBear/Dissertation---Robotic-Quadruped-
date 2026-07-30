@@ -1856,6 +1856,25 @@ void handleCommand(String input) {
     setHip(FR, 70);
     Serial.println("Start stance applied.");
 
+  } else if (input == "angles") {
+    // Prints every leg's CURRENT commanded hip/knee at once -- avoids
+    // having to scroll back through a long jog session and reconstruct
+    // "the final settled values" by hand (a real source of confusion
+    // before this existed: a truncated log once left FL's actual final
+    // angles misread as its very first jog value instead).
+    const char* legNames[NUM_HIPS] = { "FL", "FR", "RL", "RR" };
+    Serial.println("Current joint angles (hip/knee):");
+    for (int i = 0; i < NUM_HIPS; i++) {
+      Serial.print("  "); Serial.print(legNames[i]);
+      Serial.print(": hip="); Serial.print(hipPos[i]);
+      Serial.print(" knee="); Serial.println(kneePos[i]);
+    }
+    Serial.println("As #define lines:");
+    for (int i = 0; i < NUM_HIPS; i++) {
+      Serial.print("#define PRECLIMB_HIP_");  Serial.print(legNames[i]); Serial.print("   "); Serial.println(hipPos[i]);
+      Serial.print("#define PRECLIMB_KNEE_"); Serial.print(legNames[i]); Serial.print("  "); Serial.println(kneePos[i]);
+    }
+
   } else if (input == "sensors") {
     printSensors();
 
@@ -1874,7 +1893,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {

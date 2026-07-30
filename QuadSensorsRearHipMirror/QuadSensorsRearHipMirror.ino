@@ -120,9 +120,25 @@ const int  KNEE_PINS[NUM_HIPS]     = { KNEE_FL_PIN, KNEE_FR_PIN, KNEE_RL_PIN, KN
 bool       kneeInstalled[NUM_HIPS] = { true, true, true, true };
 // RL/RR confirmed by testing: below 20, the knee/calf touches the
 // ground before the wheel does, so 20 is the floor for lowering the
-// rear stance.
+// rear stance -- AT THE HIP ANGLE THAT TEST USED (the normal
+// standing/walking range, hip ~30 degrees and up). Ground clearance
+// depends on hip AND knee together, not knee alone: separately
+// confirmed by testing that with the hip down near 0 (the tucked
+// pre-climb rear stance), the knee/calf stays clear of the ground at
+// values below 20 that would have hit the ground at the higher hip
+// angle the original 20 was calibrated against. See setKnee() below --
+// the relaxed floor only applies when the hip is actually down in that
+// tested low range, not universally, so the original hip~30+ case
+// keeps its original protection.
 const int  KNEE_MIN[NUM_HIPS]      = {   0,   0,  20,  20 };
 const int  KNEE_MAX[NUM_HIPS]      = { 270, 270, 270, 270 };
+// Below this hip angle, RL/RR are confirmed clear of the ground even
+// with the knee relaxed to REAR_KNEE_MIN_LOW_HIP -- only tested around
+// hip 0-10 degrees so far (the tucked pre-climb stance), not smoothly
+// characterized across the whole range in between, so this is a
+// conservative gate rather than a derived boundary.
+#define REAR_KNEE_LOW_HIP_THRESHOLD_DEG 15
+#define REAR_KNEE_MIN_LOW_HIP 0
 // FL/FR re-calibrated again after fixing the under-voltage issue:
 // FL straight at 125, FR straight at 130. RL/RR default to the
 // servo's datasheet neutral (1500us) pending their own by-eye
@@ -163,7 +179,11 @@ void setHip(int i, int angle) {
 }
 
 void setKnee(int i, int angle) {
-  angle = constrain(angle, KNEE_MIN[i], KNEE_MAX[i]);
+  int kneeMin = KNEE_MIN[i];
+  if ((i == RL || i == RR) && hipPos[i] <= REAR_KNEE_LOW_HIP_THRESHOLD_DEG) {
+    kneeMin = REAR_KNEE_MIN_LOW_HIP; // confirmed clear of the ground at this low a hip angle -- see KNEE_MIN comment above
+  }
+  angle = constrain(angle, kneeMin, KNEE_MAX[i]);
   startKneeMove(i, angle);
 }
 

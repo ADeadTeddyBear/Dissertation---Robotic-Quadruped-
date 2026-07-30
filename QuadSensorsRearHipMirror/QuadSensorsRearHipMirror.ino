@@ -1581,7 +1581,21 @@ void updateClimbMoveTracking() {
 
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
-  if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING) {
+  // The reactive tilt-abort net is deliberately OFF during LIFT_RAISING
+  // and LIFT_SHIFTING -- confirmed on hardware that repositioning into
+  // the pre-climb stance produces real but harmless transient tilt
+  // (here: roll=15.9 right after "Stand target reached", tripping the
+  // net before the stance had even settled), the same way manually
+  // jogging into position never had anything watching for transient
+  // wobble mid-move -- only a single 'level' check once everything had
+  // actually settled. The pre-lift IMU gate at the end of LIFT_SHIFTING
+  // (LIFT_PRELIFT_TILT_LIMIT_DEG) is that same settled-state check,
+  // still fully active -- so a stance that's ACTUALLY unstable once
+  // settled still gets caught there, just not mid-reposition. The
+  // reactive net re-arms from LIFT_TUCK onward, where the real risk
+  // (FL's own mass swinging through the reach) actually lives.
+  if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
+      liftState != LIFT_RAISING && liftState != LIFT_SHIFTING) {
     if (checkLiftTiltSafety()) return;
   }
 

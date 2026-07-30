@@ -302,7 +302,18 @@ void updateServoMotion() {
 // of that leg's workspace again.
 // ============================================================
 const float LEG_THIGH_MM = 165.0;
-const float LEG_CALF_MM  = 150.0; // hip-to-knee measured 165mm, knee-to-ground (INCLUDING the wheel) measured 150mm -- corrected from an earlier 105mm that didn't include the wheel
+// hip-to-knee measured 165mm, knee-to-ground measured 150mm -- but the
+// 150mm turned out to still NOT include the wheel despite the note it
+// once carried, confirmed by cross-checking against a real measured
+// hip-pivot height (275mm) in the tall verified pose: FR's predicted
+// height matched to within 7mm once the wheel's 45mm radius (90mm
+// diameter) was added to the calf length (150+45=195), while leaving
+// it at 150 was off by 36mm. RL/RR still don't match even with this
+// fix (they're off by ~115mm regardless) -- that's a separate,
+// still-open rear-leg calibration problem, not a wheel-radius issue
+// (confirmed: at RL/RR's tested angle the calf sits nearly horizontal,
+// so its length barely affects height either way).
+const float LEG_CALF_MM  = 195.0;
 
 // Solves 2-link planar IK for leg i. (x, y) is the desired foot
 // position relative to that leg's hip pivot, in mm (x forward+, y
@@ -467,7 +478,7 @@ bool computeRearJointsForHeight(int i, float heightMM, int &hipOut, int &kneeOut
 // leave it sitting higher than commanded, not actually reaching
 // heightMM), the whole command is rejected and nothing moves, rather
 // than silently producing an uneven, non-level stance.
-float lastCommandedHeight = 315; // LEG_THIGH_MM + LEG_CALF_MM -- full extension, matches whatever those are currently set to
+float lastCommandedHeight = LEG_THIGH_MM + LEG_CALF_MM; // full extension -- references the constants directly so this can never drift out of sync with them again
 
 bool setBodyHeight(float heightMM) {
   int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
@@ -1416,6 +1427,96 @@ bool checkLiftTiltSafety() {
   return true;
 }
 
+// ============================================================
+// VERIFIED CLIMB TIERS (FL lift only)
+// Three complete, hand-verified pose sets spanning the low/mid/tall
+// range tested directly on hardware, each confirmed level by the real
+// IMU (not the analytic model -- that's confirmed unreliable at these
+// large angles, especially for RL/RR, see LEG_CALF_MM's comment).
+// Each tier has a PREP pose (FL still down at its rest position, other
+// three legs in their tested position) and a LIFT pose (FL raised/
+// extended, others unchanged or minimally adjusted, matching exactly
+// what was verified). Selected entirely by name (low/mid/tall), not by
+// any computed height -- there isn't yet a trustworthy way to map a
+// detected step height onto one of these three tiers automatically,
+// so for now the operator picks the tier that matches the step in
+// front of the robot.
+//
+// Commanded as raw hip/knee angles via commandClimbPose(), bypassing
+// solveLegIK()/setFoot() entirely for all four legs, the same
+// reasoning as the earlier PRECLIMB_* stance: the model cannot be
+// trusted to reproduce or verify poses at this angle range.
+// ============================================================
+struct ClimbPose {
+  int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
+};
+
+const ClimbPose CLIMB_PREP_LOW  = {  95, 110,  95, 120,   0,  20,  10,  20 }; // Pitch -0.3 Roll 2.9 -> Level
+const ClimbPose CLIMB_LIFT_LOW  = { 200, 110,  92, 120,   0,  20,   0,  20 }; // Pitch  0.9 Roll 2.1 -> Level
+const ClimbPose CLIMB_PREP_MID  = {  92, 100,  92, 108,   0,  50,   0,  55 }; // Pitch  1.9 Roll 2.5 -> Level
+const ClimbPose CLIMB_LIFT_MID  = { 200, 100,  88, 108,   0,  50,   0,  48 }; // Pitch  2.5 Roll 1.9 -> Level
+const ClimbPose CLIMB_PREP_TALL = { 150, 270,  60, 150,   0,  80,   0,  80 }; // Pitch  2.0 Roll 0.8 -> Level (FL knee in a "safe spot", not yet extended)
+const ClimbPose CLIMB_LIFT_TALL = { 150, 145,  60, 150,   0,  80,   0,  80 }; // Pitch  2.8 Roll 1.1 -> Level (FL knee swings to fully extended)
+
+bool climbMoveActive = false;
+unsigned long lastClimbTiltCheckMs = 0;
+
+// Commands all four legs to a ClimbPose at once, duration-synced so
+// they arrive together, at the same careful moveSpeedScale the lift
+// sequence uses. Sets climbMoveActive so updateClimbMoveTracking()
+// starts watching for tilt and for the move settling.
+void commandClimbPose(const ClimbPose &p) {
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE;
+  setHip(FL, p.hipFL);   setKnee(FL, p.kneeFL);
+  setHip(FR, p.hipFR);   setKnee(FR, p.kneeFR);
+  setHip(RL, p.hipRL);   setKnee(RL, p.kneeRL);
+  setHip(RR, p.hipRR);   setKnee(RR, p.kneeRR);
+  unsigned long dur = 0;
+  for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
+  for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
+  climbMoveActive = true;
+}
+
+// Same reasoning as checkLiftTiltSafety(), reused here since a climb
+// pose move is just as capable of tipping the robot -- freezes all
+// four legs (not three, since none of them are "the lifted leg" in
+// this scheme) if tilt exceeds LIFT_TILT_ABORT_DEG.
+bool checkClimbTiltSafety() {
+  if (millis() - lastClimbTiltCheckMs < LIFT_TILT_CHECK_MS) return false;
+  lastClimbTiltCheckMs = millis();
+
+  float pitch, roll;
+  readMPU6050(pitch, roll);
+  if (fabs(pitch) < LIFT_TILT_ABORT_DEG && fabs(roll) < LIFT_TILT_ABORT_DEG) return false;
+
+  Serial.print("CLIMB SAFETY ABORT: body tilt pitch=");
+  Serial.print(pitch, 1);
+  Serial.print(" roll=");
+  Serial.print(roll, 1);
+  Serial.println(" exceeded the safety threshold -- freezing all legs where they are.");
+
+  for (int i = 0; i < NUM_HIPS; i++) freezeLeg(i);
+  climbMoveActive = false;
+  moveSpeedScale = 1.0;
+  return true;
+}
+
+// Call every loop() pass -- watches an active climb-pose move for
+// excess tilt, and clears climbMoveActive/restores normal speed once
+// the move has genuinely settled.
+void updateClimbMoveTracking() {
+  if (!climbMoveActive) return;
+  if (checkClimbTiltSafety()) return;
+
+  bool allDone = true;
+  for (int i = 0; i < NUM_HIPS; i++) allDone = allDone && legMoveDone(i);
+  if (!allDone) return;
+
+  climbMoveActive = false;
+  moveSpeedScale = 1.0;
+  Serial.println("Climb pose reached.");
+}
+
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
   if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING) {
@@ -1843,6 +1944,30 @@ void handleCommand(String input) {
       Serial.print("#define PRECLIMB_KNEE_"); Serial.print(legNames[i]); Serial.print("  "); Serial.println(kneePos[i]);
     }
 
+  } else if (input == "climb_low_prep") {
+    commandClimbPose(CLIMB_PREP_LOW);
+    Serial.println("Commanding CLIMB_PREP_LOW.");
+
+  } else if (input == "climb_low_lift") {
+    commandClimbPose(CLIMB_LIFT_LOW);
+    Serial.println("Commanding CLIMB_LIFT_LOW.");
+
+  } else if (input == "climb_mid_prep") {
+    commandClimbPose(CLIMB_PREP_MID);
+    Serial.println("Commanding CLIMB_PREP_MID.");
+
+  } else if (input == "climb_mid_lift") {
+    commandClimbPose(CLIMB_LIFT_MID);
+    Serial.println("Commanding CLIMB_LIFT_MID.");
+
+  } else if (input == "climb_tall_prep") {
+    commandClimbPose(CLIMB_PREP_TALL);
+    Serial.println("Commanding CLIMB_PREP_TALL.");
+
+  } else if (input == "climb_tall_lift") {
+    commandClimbPose(CLIMB_LIFT_TALL);
+    Serial.println("Commanding CLIMB_LIFT_TALL.");
+
   } else if (input == "sensors") {
     printSensors();
 
@@ -1861,7 +1986,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2055,6 +2180,9 @@ void loop() {
 
   // Step any in-progress lift/lower sequence forward
   updateLiftSequence();
+
+  // Watch any in-progress climb-pose move for tilt, and settle it
+  updateClimbMoveTracking();
 
   // Step any in-progress stand sequence forward
   updateStand();

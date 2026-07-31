@@ -1837,18 +1837,26 @@ void updateLiftSequence() {
       // foot is already past the leading edge before it ever
       // descends to tread height.
       //
-      // forceBranch=1 for FL specifically -- confirmed on hardware
-      // that without this, the reach can flip to the OTHER elbow
-      // branch (visually: "swaps which way the elbow is held" and
-      // places the foot back on the floor instead of the step) even
-      // though legMoveDone() still reports success, since that only
+      // forceBranch pins FL to ONE elbow branch for both this move and
+      // LIFT_CLEAR below -- confirmed on hardware that without forcing,
+      // the reach can flip branch between the two calls (visually:
+      // "swaps which way the elbow is held" and places the foot back
+      // on the floor instead of the step), since legMoveDone() only
       // checks the move finished, not which branch it finished in.
-      // FL's own safe-knee step just set knee=270, which per the
-      // established convention (above KNEE_START folds forward) is
-      // branch 1 -- forcing it here keeps the reach in the SAME
-      // branch instead of letting "closest combined hip+knee change"
-      // occasionally prefer the wrong one.
-      int forceBranch = (liftLegIdx == FL) ? 1 : -1;
+      //
+      // Branch was first tried as 1 (matching the safe-knee step's
+      // knee=270, "above KNEE_START folds forward"), but confirmed on
+      // hardware to still land wrong: for this far-forward, shallow-y
+      // reach, branch 1 (theta2 = +kneeMag) swings the calf the SAME
+      // rotational direction as the hip's forward lean -- a hyper-
+      // extended curl that folds back up near the hip instead of
+      // reaching down onto the step. Branch 0 (theta2 = -kneeMag)
+      // folds the calf the OPPOSITE way from the hip's lean -- thigh
+      // forward, shin bent back down to the foot, the natural
+      // "reaching forward onto a step" shape -- so that's forced here
+      // instead. The safe-knee step itself (knee=270, branch 1) is a
+      // different target (tucked near the hip) and is left alone.
+      int forceBranch = (liftLegIdx == FL) ? 0 : -1;
       if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY(), forceBranch)) {
         Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
         abortLiftSequence();
@@ -1866,7 +1874,7 @@ void updateLiftSequence() {
     // is already behind the foot, so this can't clip the step face.
     // Same forceBranch reasoning as LIFT_TUCK above.
     float targetY = lastCommandedHeight - liftStepHeightMM;
-    int forceBranch = (liftLegIdx == FL) ? 1 : -1;
+    int forceBranch = (liftLegIdx == FL) ? 0 : -1;
     if (!setFoot(liftLegIdx, liftStepForwardMM, targetY, forceBranch)) {
       Serial.println("Step placement aborted: descent target unreachable -- check step height against this leg's workspace.");
       liftState = LIFT_HOLDING; // still elevated and clear of the step; leave it there, not mid-fault

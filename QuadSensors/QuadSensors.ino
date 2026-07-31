@@ -1836,7 +1836,20 @@ void updateLiftSequence() {
       // clear height -- NOT yet the step's own target y -- so the
       // foot is already past the leading edge before it ever
       // descends to tread height.
-      if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY())) {
+      //
+      // forceBranch=1 for FL specifically -- confirmed on hardware
+      // that without this, the reach can flip to the OTHER elbow
+      // branch (visually: "swaps which way the elbow is held" and
+      // places the foot back on the floor instead of the step) even
+      // though legMoveDone() still reports success, since that only
+      // checks the move finished, not which branch it finished in.
+      // FL's own safe-knee step just set knee=270, which per the
+      // established convention (above KNEE_START folds forward) is
+      // branch 1 -- forcing it here keeps the reach in the SAME
+      // branch instead of letting "closest combined hip+knee change"
+      // occasionally prefer the wrong one.
+      int forceBranch = (liftLegIdx == FL) ? 1 : -1;
+      if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY(), forceBranch)) {
         Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
         abortLiftSequence();
         return;
@@ -1851,8 +1864,10 @@ void updateLiftSequence() {
     if (!legMoveDone(liftLegIdx)) return;
     // Now purely a vertical descent at a fixed x -- the leading edge
     // is already behind the foot, so this can't clip the step face.
+    // Same forceBranch reasoning as LIFT_TUCK above.
     float targetY = lastCommandedHeight - liftStepHeightMM;
-    if (!setFoot(liftLegIdx, liftStepForwardMM, targetY)) {
+    int forceBranch = (liftLegIdx == FL) ? 1 : -1;
+    if (!setFoot(liftLegIdx, liftStepForwardMM, targetY, forceBranch)) {
       Serial.println("Step placement aborted: descent target unreachable -- check step height against this leg's workspace.");
       liftState = LIFT_HOLDING; // still elevated and clear of the step; leave it there, not mid-fault
       return;

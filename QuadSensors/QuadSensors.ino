@@ -1308,6 +1308,25 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LEG_LIFT_MM 30.0        // conservative -- thighs should not fully lift yet
 #define STEP_CLEAR_MARGIN_MM 20.0 // extra clearance above the step's own top surface during the horizontal traverse
 
+// The final descent onto the step used to be one commanded move
+// straight to the nominal target Y (lastCommandedHeight -
+// liftStepHeightMM). Confirmed on hardware that this tips the robot:
+// once the wheel actually contacts the step's rigid surface, the foot
+// physically cannot move any lower, so any remaining commanded
+// descent (from a slightly-off height estimate, or just modeling
+// slop) doesn't move the foot at all -- it torques the CHASSIS
+// upward/sideways instead, since that's the only thing left free to
+// move. The leg would visibly land on the step fine and then the
+// robot kept "lowering" it, pulling itself off balance. Descending in
+// small increments and checking the IMU after each one catches
+// contact (tilt moving off its pre-descent baseline) as soon as it
+// happens, instead of only noticing after the chassis has already
+// rolled -- a small tilt shift right after contact is expected (a
+// slight intentional push down, not a fault) but growing tilt means
+// stop now.
+#define LIFT_DESCEND_STEPS 6
+#define LIFT_CONTACT_TILT_DELTA_DEG 4.0
+
 // Every lift/step-placement now raises to a NEAR-full stand first
 // (not exactly 1.0 -- that's the same zero-slack extreme that broke
 // the weight-shift originally, since thigh+calf == max reach exactly
@@ -1386,7 +1405,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_SAFE_KNEE_FL   270
 #define LIFT_LIFTED_HIP_FL  150
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1397,6 +1416,13 @@ bool  liftIsStepPlace = false;
 bool  liftTiltAborted = false; // set by checkLiftTiltSafety() -- distinguishes a genuine LIFT_HOLDING from a safety freeze, since both land in the same state
 bool  liftUsingVerifiedStance = false; // true when LIFT_RAISING used the hardcoded PRECLIMB_* angles instead of the computed IK shift -- LIFT_SHIFTING skips the geometric margin check in that case, since the FK model is known unreliable at these angles
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
+
+// LIFT_DESCEND's incremental-contact-check bookkeeping -- see
+// LIFT_DESCEND_STEPS/LIFT_CONTACT_TILT_DELTA_DEG above.
+float liftDescendStartY = 0, liftDescendEndY = 0;
+int liftDescendStepIdx = 0;
+float liftDescendBasePitch = 0, liftDescendBaseRoll = 0;
+bool liftDescendStoppedEarly = false;
 
 // Returns to idle from anywhere in the sequence (abort or success) --
 // centralizing this so moveSpeedScale can never be left slow after
@@ -1872,19 +1898,55 @@ void updateLiftSequence() {
     if (!legMoveDone(liftLegIdx)) return;
     // Now purely a vertical descent at a fixed x -- the leading edge
     // is already behind the foot, so this can't clip the step face.
+    // Set up LIFT_DESCEND's incremental steps rather than commanding
+    // the full descent in one move -- see LIFT_DESCEND_STEPS above.
+    liftDescendStartY = computeClearY();
+    liftDescendEndY = lastCommandedHeight - liftStepHeightMM;
+    liftDescendStepIdx = 0;
+    liftDescendStoppedEarly = false;
+    readMPU6050(liftDescendBasePitch, liftDescendBaseRoll);
+    liftState = LIFT_DESCEND;
+
+  } else if (liftState == LIFT_DESCEND) {
+    if (!legMoveDone(liftLegIdx)) return;
+
+    if (liftDescendStepIdx > 0) {
+      // Only compare once at least one increment has actually landed --
+      // this is the contact check described in LIFT_DESCEND_STEPS's
+      // comment above: stop pressing as soon as tilt moves off its
+      // pre-descent baseline by more than a small amount, rather than
+      // waiting for the full LIFT_TILT_ABORT_DEG safety net to trip.
+      float pitch, roll;
+      readMPU6050(pitch, roll);
+      if (fabs(pitch - liftDescendBasePitch) > LIFT_CONTACT_TILT_DELTA_DEG ||
+          fabs(roll - liftDescendBaseRoll) > LIFT_CONTACT_TILT_DELTA_DEG) {
+        liftDescendStoppedEarly = (liftDescendStepIdx < LIFT_DESCEND_STEPS);
+        liftState = LIFT_REACH;
+        return;
+      }
+    }
+
+    if (liftDescendStepIdx >= LIFT_DESCEND_STEPS) {
+      liftState = LIFT_REACH; // reached the full nominal descent with no contact signal along the way
+      return;
+    }
+
+    liftDescendStepIdx++;
+    float t = (float)liftDescendStepIdx / (float)LIFT_DESCEND_STEPS;
+    float stepY = liftDescendStartY + (liftDescendEndY - liftDescendStartY) * t;
     // Same forceBranch reasoning as LIFT_TUCK above.
-    float targetY = lastCommandedHeight - liftStepHeightMM;
     int forceBranch = (liftLegIdx == FL) ? 0 : -1;
-    if (!setFoot(liftLegIdx, liftStepForwardMM, targetY, forceBranch)) {
+    if (!setFoot(liftLegIdx, liftStepForwardMM, stepY, forceBranch)) {
       Serial.println("Step placement aborted: descent target unreachable -- check step height against this leg's workspace.");
       liftState = LIFT_HOLDING; // still elevated and clear of the step; leave it there, not mid-fault
       return;
     }
-    liftState = LIFT_REACH;
 
   } else if (liftState == LIFT_REACH) {
     if (!legMoveDone(liftLegIdx)) return;
-    Serial.println("Foot placed on step.");
+    Serial.println(liftDescendStoppedEarly
+      ? "Foot placed on step (stopped early: contact detected via tilt before reaching the full nominal descent)."
+      : "Foot placed on step.");
     liftState = LIFT_HOLDING;
 
   } else if (liftState == LIFT_RISE) {

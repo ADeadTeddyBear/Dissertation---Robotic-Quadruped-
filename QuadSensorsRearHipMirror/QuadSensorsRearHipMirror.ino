@@ -1728,24 +1728,37 @@ void updateLiftSequence() {
       liftUsingVerifiedStance = true;
       // createStablePlatform() just moved the chassis to a fixed,
       // hand-verified stance instead of interpolating through
-      // applyStandProgress() -- so lastCommandedHeight, still holding
-      // whatever the earlier startStandMove(0.9) raise left it at (a
-      // much taller, straighter pose), no longer matches FL's real
-      // height. Confirmed on hardware: leaving it stale was the cause
-      // of the foot being commanded to descend far past the step's
-      // actual surface (targetY = lastCommandedHeight -
-      // liftStepHeightMM, computed from a reference height that was
-      // ~124mm too tall for this stance in one measured case).
-      // Recompute it directly from the verified stance's own known
-      // angles -- not a hipPos[]/kneePos[] read (the servos haven't
-      // physically arrived yet) and not the FK model applied to an
-      // arbitrary pose (unreliable in general), just this one specific,
-      // already-known target evaluated through the same trig the rest
-      // of the file uses.
+      // applyStandProgress() -- so two things anchored to the OLD pose
+      // are now stale: lastCommandedHeight, and liftStepForwardMM (the
+      // box's distance, measured by printScanChange() from the ToF1
+      // reading taken at the scan's 0%-progress baseline -- i.e. from
+      // wherever the hip WAS then, not wherever it ends up after the
+      // subsequent 0.9 stand raise and this stance's own large joint
+      // jump). Both are corrected here using this stance's own KNOWN
+      // target angles -- not a hipPos[]/kneePos[] read (the servos
+      // haven't physically arrived yet) and not the FK model applied
+      // generally (unreliable at these angles), just this one specific
+      // already-known target, evaluated with the same trig the rest of
+      // the file uses.
       {
         float t1 = radians((float)(PRECLIMB_HIP_FL - HIP_START[FL]));
         float t2 = radians((float)(PRECLIMB_KNEE_FL - KNEE_START[FL]));
+        float footXFinal = LEG_THIGH_MM * sin(t1) + LEG_CALF_MM * sin(t1 + t2);
         lastCommandedHeight = LEG_THIGH_MM * cos(t1) + LEG_CALF_MM * cos(t1 + t2);
+
+        // Same self-motion-compensation idea updateStepScan() already
+        // applies mid-sweep, extended past where the scan stopped:
+        // this stance keeps FL's foot planted (createStablePlatform()
+        // is a stance, not a lift), so any change in its position
+        // relative to the hip between the scan's 0% baseline and this
+        // final stance is exactly how far the hip -- and ToF1, fixed
+        // to the same chassis -- has shifted. Confirmed on hardware as
+        // a real, previously-missing correction: without it the reach
+        // undershoots the box's true remaining distance, landing short
+        // (through empty space, past the box's edge) instead of onto
+        // its face.
+        float chassisForwardShift = footXAtStandProgress(FL, 0.0) - footXFinal;
+        liftStepForwardMM -= chassisForwardShift;
       }
       liftState = LIFT_SHIFTING;
       return;

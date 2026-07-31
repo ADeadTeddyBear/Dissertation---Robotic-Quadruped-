@@ -1264,20 +1264,22 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // large angles this stance actually needs (well past what the
 // small-angle IK derivation assumes). Trusting the model to reproduce
 // or verify this stance would just repeat that failure -- these are
-// the exact angles confirmed by hand to keep the chassis flat while
-// FL lifts. RESIDUAL RISK: these were tuned by hand, incrementally,
-// not necessarily from the same LIFT_STAND_TARGET_PROGRESS (90%) raise
-// height the automated sequence commits to first -- watch closely on
-// the first automated attempt in case that mismatch recurs.
+// the exact angles confirmed by hand (real IMU: Level) to keep the
+// chassis flat while FL lifts, matching CLIMB_PREP_MID below. RL/RR
+// hip=0 is the key finding here -- confirmed across every low/mid/tall
+// test, not just this one, so it replaces the earlier hip=90/80 values
+// this stance used before that pattern was established.
 // ============================================================
-#define PRECLIMB_HIP_RL   90
-#define PRECLIMB_KNEE_RL  210
-#define PRECLIMB_HIP_RR   80
-#define PRECLIMB_KNEE_RR  245
-#define PRECLIMB_HIP_FR   80
-#define PRECLIMB_KNEE_FR  150
+#define PRECLIMB_HIP_FL   92
+#define PRECLIMB_KNEE_FL  100
+#define PRECLIMB_HIP_RL   0
+#define PRECLIMB_KNEE_RL  50
+#define PRECLIMB_HIP_RR   0
+#define PRECLIMB_KNEE_RR  55
+#define PRECLIMB_HIP_FR   92
+#define PRECLIMB_KNEE_FR  108
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1536,6 +1538,44 @@ void updateClimbMoveTracking() {
   Serial.println("Climb pose reached.");
 }
 
+// ============================================================
+// STABLE PLATFORM (FL lift only)
+// Split out on request into its own step, distinct from measuring the
+// step (updateStepScan()/printScanChange()) and from actually lifting
+// the leg (below): this is JUST "get all four legs into the
+// hand-verified, IMU-confirmed-level stance first," commanded as
+// absolute angles for the same reason as PRECLIMB_* above -- the FK/IK
+// model can't be trusted to reproduce or verify this stance itself.
+// ============================================================
+void createStablePlatform() {
+  setHip(FL, PRECLIMB_HIP_FL); setKnee(FL, PRECLIMB_KNEE_FL);
+  setHip(FR, PRECLIMB_HIP_FR); setKnee(FR, PRECLIMB_KNEE_FR);
+  setHip(RL, PRECLIMB_HIP_RL); setKnee(RL, PRECLIMB_KNEE_RL);
+  setHip(RR, PRECLIMB_HIP_RR); setKnee(RR, PRECLIMB_KNEE_RR);
+  unsigned long dur = 0;
+  for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
+  for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
+}
+
+// ============================================================
+// SAFE-KNEE LIFT (FL lift only)
+// Requested directly: before the hip starts lifting the leg, first
+// move the knee to a safe, verified position on its own and let that
+// settle -- confirmed by hand (CLIMB_PREP_TALL/CLIMB_LIFT_TALL) that
+// knee=270 is a safe fold to hold the leg at before the hip does any
+// large motion, rather than moving hip and knee together into unknown
+// combined territory. Only the hip moves during the lift-off itself;
+// the knee is left alone here and only changes later (during the
+// reach) if a step-place is actually in progress.
+//
+// LIFT_LIFTED_HIP_FL=150 matches CLIMB_LIFT_TALL exactly -- the one
+// combination hardware-confirmed (real IMU: Level) to pair a genuinely
+// lifted-looking hip angle with this same safe knee, regardless of
+// which prep pose the leg started from.
+// ============================================================
+#define LIFT_SAFE_KNEE_FL   270
+#define LIFT_LIFTED_HIP_FL  150
+
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
   // The reactive tilt-abort net is deliberately OFF during LIFT_RAISING,
@@ -1570,25 +1610,17 @@ void updateLiftSequence() {
     }
 
     if (liftLegIdx == FL) {
-      // Hand-verified stance -- see PRECLIMB_* above. Commanded as
-      // absolute angles directly (not through setFoot()/IK), since the
-      // model that would validate an IK target has already proven
-      // unreliable at these angles. The geometric stability-margin
-      // check in LIFT_SHIFTING is skipped for the same reason
-      // (liftUsingVerifiedStance) -- the real IMU-based checks
+      // Step 2 of 3 (measure / stable platform / lift): get all four
+      // legs into the hand-verified stance -- see createStablePlatform()
+      // above. Commanded as absolute angles, not through setFoot()/IK,
+      // since the model that would validate an IK target has already
+      // proven unreliable at these angles. The geometric
+      // stability-margin check in LIFT_SHIFTING is skipped for the same
+      // reason (liftUsingVerifiedStance) -- the real IMU-based checks
       // (checkLiftTiltSafety(), the pre-lift tilt gate) stay fully
-      // active regardless, since those measure the actual robot, not
-      // a model of it.
-      setHip(RL, PRECLIMB_HIP_RL);   setKnee(RL, PRECLIMB_KNEE_RL);
-      setHip(RR, PRECLIMB_HIP_RR);   setKnee(RR, PRECLIMB_KNEE_RR);
-      setHip(FR, PRECLIMB_HIP_FR);   setKnee(FR, PRECLIMB_KNEE_FR);
-      unsigned long dur = 0;
-      dur = max(dur, max(hipMoveDurationMs[RL], kneeMoveDurationMs[RL]));
-      dur = max(dur, max(hipMoveDurationMs[FR], kneeMoveDurationMs[FR]));
-      dur = max(dur, max(hipMoveDurationMs[RR], kneeMoveDurationMs[RR]));
-      hipMoveDurationMs[RL] = kneeMoveDurationMs[RL] = dur;
-      hipMoveDurationMs[FR] = kneeMoveDurationMs[FR] = dur;
-      hipMoveDurationMs[RR] = kneeMoveDurationMs[RR] = dur;
+      // active regardless, since those measure the actual robot, not a
+      // model of it.
+      createStablePlatform();
       liftUsingVerifiedStance = true;
       liftState = LIFT_SHIFTING;
       return;
@@ -1685,18 +1717,23 @@ void updateLiftSequence() {
         return;
       }
     }
-    // Tuck: bring the foot toward directly under the hip (x=0) while
-    // raising it clear of the ground -- keeps the leg as close to the
-    // body as possible while airborne, rather than swinging out first.
-    if (!setFoot(liftLegIdx, 0, liftOrigY - LEG_LIFT_MM)) {
-      Serial.println("Lift aborted: tuck-raise target unreachable.");
-      abortLiftSequence();
-      return;
-    }
+    // Step 3 of 3 (measure / stable platform / lift), part A: move the
+    // knee ALONE to its safe position first -- see SAFE-KNEE LIFT
+    // above -- before the hip does anything. Not IK/setFoot(): a
+    // single-joint absolute move, so there's no risk of the model
+    // picking a different knee angle than the verified-safe one.
+    setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
+    liftState = LIFT_KNEE_SAFE;
+
+  } else if (liftState == LIFT_KNEE_SAFE) {
+    if (!legMoveDone(liftLegIdx)) return; // knee still settling into its safe position
+    // Step 3 of 3, part B: NOW lift the hip, with the knee already
+    // safely folded and holding still -- see LIFT_LIFTED_HIP_FL above.
+    setHip(liftLegIdx, LIFT_LIFTED_HIP_FL);
     liftState = LIFT_TUCK;
 
   } else if (liftState == LIFT_TUCK) {
-    if (!legMoveDone(liftLegIdx)) return;
+    if (!legMoveDone(liftLegIdx)) return; // hip still lifting
     if (liftIsStepPlace) {
       // Move forward to the step's x while staying at the elevated
       // clear height -- NOT yet the step's own target y -- so the

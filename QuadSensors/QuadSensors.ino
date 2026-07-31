@@ -1324,8 +1324,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // rolled -- a small tilt shift right after contact is expected (a
 // slight intentional push down, not a fault) but growing tilt means
 // stop now.
-#define LIFT_DESCEND_STEPS 6
-#define LIFT_CONTACT_TILT_DELTA_DEG 4.0
+//
+// STEPS raised 6->12 and the tilt trigger tightened 4.0->2.0: confirmed
+// on hardware that 6 coarse steps let each increment press in further
+// than intended before the check fired, visibly lifting/pitching the
+// chassis more than "a little pressure" -- finer steps mean less
+// overshoot per increment, and the tighter threshold stops closer to
+// first contact instead of letting the tilt build up first. This
+// still only holds the CHASSIS closer to level, not perfectly flat --
+// with FL resting higher than the other three feet, some pitch is
+// physically unavoidable unless the stance legs also rise to
+// compensate, which isn't implemented.
+#define LIFT_DESCEND_STEPS 12
+#define LIFT_CONTACT_TILT_DELTA_DEG 2.0
 
 // Every lift/step-placement now raises to a NEAR-full stand first
 // (not exactly 1.0 -- that's the same zero-slack extreme that broke

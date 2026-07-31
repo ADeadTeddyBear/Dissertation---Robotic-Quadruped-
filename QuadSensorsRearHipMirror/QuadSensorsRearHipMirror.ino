@@ -1726,6 +1726,27 @@ void updateLiftSequence() {
       // model of it.
       createStablePlatform();
       liftUsingVerifiedStance = true;
+      // createStablePlatform() just moved the chassis to a fixed,
+      // hand-verified stance instead of interpolating through
+      // applyStandProgress() -- so lastCommandedHeight, still holding
+      // whatever the earlier startStandMove(0.9) raise left it at (a
+      // much taller, straighter pose), no longer matches FL's real
+      // height. Confirmed on hardware: leaving it stale was the cause
+      // of the foot being commanded to descend far past the step's
+      // actual surface (targetY = lastCommandedHeight -
+      // liftStepHeightMM, computed from a reference height that was
+      // ~124mm too tall for this stance in one measured case).
+      // Recompute it directly from the verified stance's own known
+      // angles -- not a hipPos[]/kneePos[] read (the servos haven't
+      // physically arrived yet) and not the FK model applied to an
+      // arbitrary pose (unreliable in general), just this one specific,
+      // already-known target evaluated through the same trig the rest
+      // of the file uses.
+      {
+        float t1 = radians((float)(PRECLIMB_HIP_FL - HIP_START[FL]));
+        float t2 = radians((float)(PRECLIMB_KNEE_FL - KNEE_START[FL]));
+        lastCommandedHeight = LEG_THIGH_MM * cos(t1) + LEG_CALF_MM * cos(t1 + t2);
+      }
       liftState = LIFT_SHIFTING;
       return;
     }

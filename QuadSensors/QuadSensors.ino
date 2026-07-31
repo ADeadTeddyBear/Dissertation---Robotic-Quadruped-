@@ -1275,6 +1275,21 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // stop can pass a stance that hasn't actually finished moving yet.
 #define LIFT_SETTLE_DWELL_MS 3000
 
+// How far (degrees) to sink all four legs, right after the stable
+// platform settles and before the actual lift begins, to re-measure
+// the step's forward distance with a fresh, LIVE ToF1 reading instead
+// of trusting the scan-derived (and now chassis-motion-corrected, but
+// still model-based) estimate. The platform stance stands tall enough
+// that ToF1's beam has likely already cleared over the step's top
+// (the same "cleared the lip" effect the scan itself watches for), so
+// it can't see the step's front face from up there -- sinking a few
+// cm first should drop the beam back below the step's height. Front
+// legs lower by hip+/knee- (frontAmountForHeight()'s cancelling
+// convention); rear legs lower by knee- alone, since PRECLIMB_HIP_RL/RR
+// are already at HIP_MIN (0) and can't go any lower. See
+// LIFT_REMEASURE_DOWN.
+#define REMEASURE_LOWER_DEG 15
+
 // The whole lift/step-placement sequence moves at this fraction of
 // normal servo speed (see moveSpeedScale) -- confirmed manually that a
 // slow, careful, incremental approach is what actually gets a foot
@@ -1334,7 +1349,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_SAFE_KNEE_FL   270
 #define LIFT_LIFTED_HIP_FL  150
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1646,7 +1661,8 @@ void updateLiftSequence() {
   // through the reach) actually lives.
   if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
       liftState != LIFT_RAISING && liftState != LIFT_SHIFTING &&
-      liftState != LIFT_SETTLING) {
+      liftState != LIFT_SETTLING && liftState != LIFT_REMEASURE_DOWN &&
+      liftState != LIFT_REMEASURE_UP) {
     if (checkLiftTiltSafety()) return;
   }
 
@@ -1803,11 +1819,58 @@ void updateLiftSequence() {
         return;
       }
     }
-    // Step 3 of 3 (measure / stable platform / lift), part A: move the
-    // knee ALONE to its safe position first -- see SAFE-KNEE LIFT
-    // above -- before the hip does anything. Not IK/setFoot(): a
-    // single-joint absolute move, so there's no risk of the model
-    // picking a different knee angle than the verified-safe one.
+    if (liftIsStepPlace) {
+      // Re-measure the step's forward distance with a fresh, LIVE
+      // ToF1 reading before committing to the reach -- see
+      // REMEASURE_LOWER_DEG above for why a sink is needed first.
+      setHip(FL, hipPos[FL] + REMEASURE_LOWER_DEG);
+      setKnee(FL, kneePos[FL] - REMEASURE_LOWER_DEG);
+      setHip(FR, hipPos[FR] + REMEASURE_LOWER_DEG);
+      setKnee(FR, kneePos[FR] - REMEASURE_LOWER_DEG);
+      setKnee(RL, kneePos[RL] - REMEASURE_LOWER_DEG);
+      setKnee(RR, kneePos[RR] - REMEASURE_LOWER_DEG);
+      unsigned long dur = 0;
+      for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
+      for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
+      liftState = LIFT_REMEASURE_DOWN;
+    } else {
+      // Step 3 of 3 (measure / stable platform / lift), part A: move
+      // the knee ALONE to its safe position first -- see SAFE-KNEE
+      // LIFT above -- before the hip does anything. Not IK/setFoot():
+      // a single-joint absolute move, so there's no risk of the model
+      // picking a different knee angle than the verified-safe one.
+      setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
+      liftState = LIFT_KNEE_SAFE;
+    }
+
+  } else if (liftState == LIFT_REMEASURE_DOWN) {
+    {
+      bool allDone = true;
+      for (int i = 0; i < NUM_HIPS; i++) allDone = allDone && legMoveDone(i);
+      if (!allDone) return;
+    }
+    // Settled at the lower height -- take the live reading now, while
+    // the beam should actually be able to see the step's front face.
+    pollTofSensors();
+    if (tof1_ok) {
+      float freshForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
+      Serial.print("Re-measured step distance: "); Serial.print(freshForwardMM, 0);
+      Serial.print("mm forward (scan estimate was "); Serial.print(liftStepForwardMM, 0);
+      Serial.println("mm).");
+      liftStepForwardMM = freshForwardMM;
+    } else {
+      Serial.println("Re-measure: ToF1 reading invalid, keeping the scan-derived estimate.");
+    }
+    // Back to the verified stance before continuing.
+    createStablePlatform();
+    liftState = LIFT_REMEASURE_UP;
+
+  } else if (liftState == LIFT_REMEASURE_UP) {
+    {
+      bool allDone = true;
+      for (int i = 0; i < NUM_HIPS; i++) allDone = allDone && legMoveDone(i);
+      if (!allDone) return;
+    }
     setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
     liftState = LIFT_KNEE_SAFE;
 

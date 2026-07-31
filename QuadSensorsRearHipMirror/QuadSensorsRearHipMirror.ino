@@ -1331,7 +1331,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define PRECLIMB_HIP_FR   92
 #define PRECLIMB_KNEE_FR  108
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_RETRACT, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1413,19 +1413,28 @@ bool startPlaceOnStep(int legToLift, float stepForwardMM, float stepHeightMM) {
 
 // Starts retracting/lowering the currently-held leg (whether plain-
 // lifted or placed on a step) and restoring the shifted stance legs.
+//
+// Same fix as the ascent: this used to retract via setFoot()/IK
+// (rise to a computed clear height, then move back, then return to
+// liftOrigX/liftOrigY) -- confirmed on hardware that this tilted the
+// robot, with FL extending further than the other legs, because
+// solveLegIK()'s continuity-based branch selection was starting from
+// wherever REACH had just left FL (an already-extreme, IK-computed
+// placement angle) and had no reason to produce anything sane from
+// there -- the same model unreliability already established for large
+// angles, just hit on the way down instead of the way up. Retraction
+// now mirrors the ascent exactly, in reverse, with the same two
+// verified absolute-angle waypoints: first back to the safe lifted
+// pose (LIFT_LIFTED_HIP_FL/LIFT_SAFE_KNEE_FL), then back to the
+// original stable-platform prep angle (PRECLIMB_HIP_FL/KNEE_FL) --
+// no IK involved for FL at any point. Both the step-place and plain-
+// lift cases now do the same thing: for a plain lift FL is already at
+// the safe lifted pose, so that first move is a harmless no-op.
 bool startLower() {
   if (liftState != LIFT_HOLDING) return false;
-  if (liftIsStepPlace) {
-    // Rise straight up (vertical-only) off the step to the same clear
-    // height used on the way in, BEFORE moving back horizontally --
-    // mirrors the outbound CLEAR-then-descend split so the foot never
-    // drags back across the step's front face at tread height.
-    setFoot(liftLegIdx, liftStepForwardMM, computeClearY());
-    liftState = LIFT_RISE;
-  } else {
-    setFoot(liftLegIdx, liftOrigX, liftOrigY);
-    liftState = LIFT_UNTUCK;
-  }
+  setHip(liftLegIdx, LIFT_LIFTED_HIP_FL);
+  setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
+  liftState = LIFT_RISE;
   return true;
 }
 
@@ -1820,15 +1829,12 @@ void updateLiftSequence() {
     liftState = LIFT_HOLDING;
 
   } else if (liftState == LIFT_RISE) {
-    if (!legMoveDone(liftLegIdx)) return;
-    // Now purely a horizontal move at the fixed clear height -- back
-    // past the step's edge before ever descending toward the ground.
-    setFoot(liftLegIdx, 0, computeClearY());
-    liftState = LIFT_RETRACT;
-
-  } else if (liftState == LIFT_RETRACT) {
-    if (!legMoveDone(liftLegIdx)) return;
-    setFoot(liftLegIdx, liftOrigX, liftOrigY);
+    if (!legMoveDone(liftLegIdx)) return; // settling into the safe lifted pose
+    // Back to the original stable-platform prep angle -- see
+    // startLower()'s comment. No IK: a direct, verified absolute move,
+    // same as the ascent.
+    setHip(liftLegIdx, PRECLIMB_HIP_FL);
+    setKnee(liftLegIdx, PRECLIMB_KNEE_FL);
     liftState = LIFT_UNTUCK;
 
   } else if (liftState == LIFT_UNTUCK) {

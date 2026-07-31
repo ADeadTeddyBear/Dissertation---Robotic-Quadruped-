@@ -323,6 +323,88 @@ const float LEG_THIGH_MM = 165.0;
 // so its length barely affects height either way).
 const float LEG_CALF_MM  = 195.0;
 
+// ============================================================
+// REAR LEG HEIGHT CALIBRATION (hip=0 only)
+// Real, hand-measured data -- NOT a trigonometric model. A corrected
+// 2-link formula (sign-flipped, hip/knee-start offset adjusted) was
+// tried and fit 2 measurements well, but fell apart on a 3rd (43-123mm
+// errors) -- the rear legs' real geometry isn't well described by a
+// simple 2-link serial linkage across this angle range, so this uses
+// the measured height-vs-knee relationship directly instead.
+//
+// Forward/x offset was ALSO measured but is NOT included here -- it
+// came out non-monotonic (behind/front/behind/behind as knee
+// increased steadily), which isn't physically plausible for a leg
+// bending progressively at one joint. Traced to the measurement
+// method: the y-axis readings used the tape measure's own 90-degree
+// edge (repeatable), but x was estimated by eye ("looking straight
+// down", no plumb line), which is exactly the kind of measurement
+// that would be noisy enough to swamp the real signal. Height's slope
+// (0.75-3.5mm per degree of knee, checked between every pair of
+// calibration points) stays positive and sane throughout -- no such
+// check was possible for x.
+//
+// Only valid at hip=0 -- matches every rear-leg pose actually used
+// (PRECLIMB_HIP_RL/RR, all three CLIMB_PREP/LIFT tiers all use hip=0
+// for RL/RR). RL and RR are calibrated SEPARATELY -- they don't agree
+// with each other either (RR consistently reads a bit shorter), so
+// sharing one table between them would reintroduce the same kind of
+// error this replaces.
+// ============================================================
+#define REAR_CAL_POINTS 5
+const float REAR_CAL_KNEE[REAR_CAL_POINTS]      = {  40,  50,  70,  80, 115 };
+const float REAR_CAL_HEIGHT_RL[REAR_CAL_POINTS] = { 215, 235, 257, 275, 308 };
+const float REAR_CAL_HEIGHT_RR[REAR_CAL_POINTS] = { 200, 225, 240, 275, 305 };
+
+// Linear-interpolates the real measured height for leg RL/RR (hip=0
+// assumed) at a given knee angle -- forward kinematics via calibration
+// table instead of the trig model, which is confirmed unreliable at
+// this angle range. Clamps to the calibrated range and warns if the
+// requested knee falls outside it (extrapolating beyond real data).
+float rearHeightForKnee(int leg, float knee) {
+  const float* h = (leg == RL) ? REAR_CAL_HEIGHT_RL : REAR_CAL_HEIGHT_RR;
+  if (knee <= REAR_CAL_KNEE[0]) {
+    if (knee < REAR_CAL_KNEE[0]) Serial.println("rearHeightForKnee: knee below calibrated range (40-115) -- extrapolating from the nearest measured point.");
+    return h[0];
+  }
+  if (knee >= REAR_CAL_KNEE[REAR_CAL_POINTS - 1]) {
+    if (knee > REAR_CAL_KNEE[REAR_CAL_POINTS - 1]) Serial.println("rearHeightForKnee: knee above calibrated range (40-115) -- extrapolating from the nearest measured point.");
+    return h[REAR_CAL_POINTS - 1];
+  }
+  for (int i = 0; i < REAR_CAL_POINTS - 1; i++) {
+    if (knee >= REAR_CAL_KNEE[i] && knee <= REAR_CAL_KNEE[i + 1]) {
+      float t = (knee - REAR_CAL_KNEE[i]) / (REAR_CAL_KNEE[i + 1] - REAR_CAL_KNEE[i]);
+      return h[i] + t * (h[i + 1] - h[i]);
+    }
+  }
+  return h[REAR_CAL_POINTS - 1]; // unreachable
+}
+
+// Inverse of rearHeightForKnee(): given a target height, finds the
+// knee angle (hip=0) the real measured data says achieves it --
+// height increases monotonically with knee across the calibrated
+// range (confirmed: the per-point slope never goes negative), so this
+// is well-posed. Clamps to the calibrated range and warns if the
+// target height falls outside what's actually been measured.
+float rearKneeForHeight(int leg, float targetHeight) {
+  const float* h = (leg == RL) ? REAR_CAL_HEIGHT_RL : REAR_CAL_HEIGHT_RR;
+  if (targetHeight <= h[0]) {
+    if (targetHeight < h[0]) Serial.println("rearKneeForHeight: target height below calibrated range -- extrapolating from the nearest measured point.");
+    return REAR_CAL_KNEE[0];
+  }
+  if (targetHeight >= h[REAR_CAL_POINTS - 1]) {
+    if (targetHeight > h[REAR_CAL_POINTS - 1]) Serial.println("rearKneeForHeight: target height above calibrated range -- extrapolating from the nearest measured point.");
+    return REAR_CAL_KNEE[REAR_CAL_POINTS - 1];
+  }
+  for (int i = 0; i < REAR_CAL_POINTS - 1; i++) {
+    if (targetHeight >= h[i] && targetHeight <= h[i + 1]) {
+      float t = (targetHeight - h[i]) / (h[i + 1] - h[i]);
+      return REAR_CAL_KNEE[i] + t * (REAR_CAL_KNEE[i + 1] - REAR_CAL_KNEE[i]);
+    }
+  }
+  return REAR_CAL_KNEE[REAR_CAL_POINTS - 1]; // unreachable
+}
+
 // Solves 2-link planar IK for leg i. (x, y) is the desired foot
 // position relative to that leg's hip pivot, in mm (x forward+, y
 // down+). Returns false if the target is out of reach; otherwise
@@ -2072,6 +2154,20 @@ void handleCommand(String input) {
     }
     Serial.println("Measure the real hip-pivot-to-ground-contact height (and forward offset if you can) with a tape measure, compare against both.");
 
+  } else if (input.startsWith("rear_height_rl ") || input.startsWith("rear_height_rr ")) {
+    int leg = input.startsWith("rear_height_rl ") ? RL : RR;
+    float knee = input.substring(15).toFloat();
+    float h = rearHeightForKnee(leg, knee);
+    Serial.print(leg == RL ? "RL" : "RR"); Serial.print(" knee="); Serial.print(knee, 0);
+    Serial.print(" -> height="); Serial.print(h, 1); Serial.println("mm (from real calibration data, hip=0 assumed)");
+
+  } else if (input.startsWith("rear_knee_rl ") || input.startsWith("rear_knee_rr ")) {
+    int leg = input.startsWith("rear_knee_rl ") ? RL : RR;
+    float targetHeight = input.substring(13).toFloat();
+    float knee = rearKneeForHeight(leg, targetHeight);
+    Serial.print(leg == RL ? "RL" : "RR"); Serial.print(" target height="); Serial.print(targetHeight, 0);
+    Serial.print("mm -> knee="); Serial.print(knee, 1); Serial.println(" (from real calibration data, hip=0 assumed)");
+
   } else if (input == "climb_low_prep") {
     commandClimbPose(CLIMB_PREP_LOW);
     Serial.println("Commanding CLIMB_PREP_LOW.");
@@ -2114,7 +2210,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | rear_fk | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | rear_fk | rear_height_rl/rr <knee> | rear_knee_rl/rr <height_mm> | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {

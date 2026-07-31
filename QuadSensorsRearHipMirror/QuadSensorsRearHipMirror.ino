@@ -1401,6 +1401,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_SAFE_KNEE_FL   270
 #define LIFT_LIFTED_HIP_FL  150
 
+// FR's counterparts for the SECOND-LEG-ONTO-STEP maneuver (see
+// startSecondLegOntoStep() below) -- NOT hardware-verified the way
+// LIFT_SAFE_KNEE_FL/LIFT_LIFTED_HIP_FL were (many rounds of real
+// testing). These just mirror FL's values, on the assumption that
+// FR's near-identical PRECLIMB pose (92deg/108deg vs FL's 92deg/100deg)
+// means a near-mirror-symmetric leg -- this project has repeatedly
+// found that assumption unreliable leg-to-leg (RL and RR don't even
+// agree with each other), so treat this as an untested starting guess
+// and watch closely / be ready to catch the robot the first time it
+// runs, the same as any other UNTESTED ON HARDWARE pose in this file.
+#define LIFT_SAFE_KNEE_FR   270
+#define LIFT_LIFTED_HIP_FR  150
+
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
@@ -1411,6 +1424,7 @@ float liftOrigX, liftOrigY;           // the lifted leg's own foot position befo
 bool  liftIsStepPlace = false;
 bool  liftTiltAborted = false; // set by checkLiftTiltSafety() -- distinguishes a genuine LIFT_HOLDING from a safety freeze, since both land in the same state
 bool  liftUsingVerifiedStance = false; // true when LIFT_RAISING used the hardcoded PRECLIMB_* angles instead of the computed IK shift -- LIFT_SHIFTING skips the geometric margin check in that case, since the FK model is known unreliable at these angles
+bool  liftIsSecondLeg = false; // true when this sequence is startSecondLegOntoStep() placing a SECOND leg while the first stays put on the step -- LIFT_UNTUCK skips restoring liftStanceIdx (stale from the first leg's own sequence, and nothing else actually moved this time)
 float liftStepForwardMM = 0, liftStepHeightMM = 0;
 
 // LIFT_DESCEND's incremental-contact-check bookkeeping -- see
@@ -1426,6 +1440,7 @@ bool liftDescendStoppedEarly = false;
 void abortLiftSequence() {
   liftState = LIFT_IDLE;
   liftLegIdx = -1;
+  liftIsSecondLeg = false;
   moveSpeedScale = 1.0;
 }
 
@@ -1509,9 +1524,42 @@ bool startPlaceOnStep(int legToLift, float stepForwardMM, float stepHeightMM) {
 // the safe lifted pose, so that first move is a harmless no-op.
 bool startLower() {
   if (liftState != LIFT_HOLDING) return false;
-  setHip(liftLegIdx, LIFT_LIFTED_HIP_FL);
-  setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
+  setHip(liftLegIdx, (liftLegIdx == FR) ? LIFT_LIFTED_HIP_FR : LIFT_LIFTED_HIP_FL);
+  setKnee(liftLegIdx, (liftLegIdx == FR) ? LIFT_SAFE_KNEE_FR : LIFT_SAFE_KNEE_FL);
   liftState = LIFT_RISE;
+  return true;
+}
+
+// Places a SECOND leg onto the step while the first (liftLegIdx,
+// already resting there in LIFT_HOLDING) stays exactly where it is --
+// unlike startPlaceOnStep(), this does NOT raise/weight-shift/
+// createStablePlatform() first, since all of that would disturb the
+// first leg's already-placed position (createStablePlatform()
+// specifically would snap it straight back down to its PRECLIMB
+// angles). Requires the first leg to already be down-and-holding, not
+// mid-sequence or frozen by a safety abort. liftStepForwardMM is left
+// as whatever the first leg's (already live-re-measured) reach used --
+// FL and FR share the same fore-aft hip position (HIP_OFFSET_X), so
+// the same forward distance to the step applies; only their left/
+// right offset differs, which doesn't affect forward reach at all.
+//
+// No verified stance exists yet for "one front leg already on the
+// step, the other reaching up next to it" -- liftUsingVerifiedStance
+// is set so the geometric margin check (which assumes a symmetric,
+// all-feet-on-the-ground base) is skipped the same way it is for the
+// first leg's own verified stance; the real IMU-based tilt safety net
+// stays fully active as the actual backstop.
+bool startSecondLegOntoStep(int legToLift) {
+  if (liftState != LIFT_HOLDING || liftTiltAborted) return false;
+  if (legToLift == liftLegIdx) return false;
+
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE;
+  liftIsStepPlace = true;
+  liftIsSecondLeg = true;
+  liftUsingVerifiedStance = true;
+  liftLegIdx = legToLift;
+  setKnee(liftLegIdx, (legToLift == FR) ? LIFT_SAFE_KNEE_FR : LIFT_SAFE_KNEE_FL);
+  liftState = LIFT_KNEE_SAFE;
   return true;
 }
 
@@ -1930,7 +1978,7 @@ void updateLiftSequence() {
     if (!legMoveDone(liftLegIdx)) return; // knee still settling into its safe position
     // Step 3 of 3, part B: NOW lift the hip, with the knee already
     // safely folded and holding still -- see LIFT_LIFTED_HIP_FL above.
-    setHip(liftLegIdx, LIFT_LIFTED_HIP_FL);
+    setHip(liftLegIdx, (liftLegIdx == FR) ? LIFT_LIFTED_HIP_FR : LIFT_LIFTED_HIP_FL);
     liftState = LIFT_TUCK;
 
   } else if (liftState == LIFT_TUCK) {
@@ -1960,7 +2008,7 @@ void updateLiftSequence() {
       // "reaching forward onto a step" shape -- so that's forced here
       // instead. The safe-knee step itself (knee=270, branch 1) is a
       // different target (tucked near the hip) and is left alone.
-      int forceBranch = (liftLegIdx == FL) ? 0 : -1;
+      int forceBranch = (liftLegIdx == FL || liftLegIdx == FR) ? 0 : -1;
       if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY(), forceBranch)) {
         Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
         abortLiftSequence();
@@ -2013,7 +2061,7 @@ void updateLiftSequence() {
     float t = (float)liftDescendStepIdx / (float)LIFT_DESCEND_STEPS;
     float stepY = liftDescendStartY + (liftDescendEndY - liftDescendStartY) * t;
     // Same forceBranch reasoning as LIFT_TUCK above.
-    int forceBranch = (liftLegIdx == FL) ? 0 : -1;
+    int forceBranch = (liftLegIdx == FL || liftLegIdx == FR) ? 0 : -1;
     if (!setFoot(liftLegIdx, liftStepForwardMM, stepY, forceBranch)) {
       Serial.println("Step placement aborted: descent target unreachable -- check step height against this leg's workspace.");
       liftState = LIFT_HOLDING; // still elevated and clear of the step; leave it there, not mid-fault
@@ -2032,18 +2080,27 @@ void updateLiftSequence() {
     // Back to the original stable-platform prep angle -- see
     // startLower()'s comment. No IK: a direct, verified absolute move,
     // same as the ascent.
-    setHip(liftLegIdx, PRECLIMB_HIP_FL);
-    setKnee(liftLegIdx, PRECLIMB_KNEE_FL);
+    setHip(liftLegIdx, (liftLegIdx == FR) ? PRECLIMB_HIP_FR : PRECLIMB_HIP_FL);
+    setKnee(liftLegIdx, (liftLegIdx == FR) ? PRECLIMB_KNEE_FR : PRECLIMB_KNEE_FL);
     liftState = LIFT_UNTUCK;
 
   } else if (liftState == LIFT_UNTUCK) {
     if (!legMoveDone(liftLegIdx)) return;
-    for (int k = 0; k < 3; k++) setFoot(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
+    // For a second leg (see startSecondLegOntoStep()), liftStanceIdx is
+    // stale from the FIRST leg's own sequence, and nothing else
+    // actually moved this time (the first leg stayed fixed the whole
+    // time) -- so there's nothing to restore, skip straight to
+    // LIFT_LOWERING.
+    if (!liftIsSecondLeg) {
+      for (int k = 0; k < 3; k++) setFoot(liftStanceIdx[k], liftStanceX[k], liftStanceY[k]);
+    }
     liftState = LIFT_LOWERING;
 
   } else if (liftState == LIFT_LOWERING) {
     bool allDone = legMoveDone(liftLegIdx);
-    for (int k = 0; k < 3; k++) allDone = allDone && legMoveDone(liftStanceIdx[k]);
+    if (!liftIsSecondLeg) {
+      for (int k = 0; k < 3; k++) allDone = allDone && legMoveDone(liftStanceIdx[k]);
+    }
     if (!allDone) return;
     Serial.println("Leg lowered, stance restored.");
     abortLiftSequence(); // successful completion, not actually an abort -- just reuses the same "return to idle, reset speed" bookkeeping
@@ -2325,7 +2382,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2400,6 +2457,15 @@ void handleCommand(String input) {
       Serial.println("Lowering leg...");
     } else {
       Serial.println("No leg currently lifted.");
+    }
+
+  } else if (input == "second_fr") {
+    // See startSecondLegOntoStep() -- untested stance, no verified
+    // pose for "one front leg already on the step." Watch closely.
+    if (startSecondLegOntoStep(FR)) {
+      Serial.println("Placing FR onto the step next to the held leg -- UNTESTED stance, watch closely.");
+    } else {
+      Serial.println("Cannot start second-leg placement (first leg isn't down-and-holding, is already FR, or a safety abort is active -- send 'lower' first if so).");
     }
 
   } else if (input.startsWith("all ")) {

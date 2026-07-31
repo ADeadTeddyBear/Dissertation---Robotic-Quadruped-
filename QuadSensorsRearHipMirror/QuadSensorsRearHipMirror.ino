@@ -2090,6 +2090,40 @@ void handleCommand(String input) {
       Serial.print("#define PRECLIMB_KNEE_"); Serial.print(legNames[i]); Serial.print("  "); Serial.println(kneePos[i]);
     }
 
+  } else if (input == "rear_fk") {
+    // Prints RL/RR's predicted foot position under BOTH hypotheses --
+    // the current model (theta1+theta2) and the suspected-flipped rear
+    // convention (theta1-theta2, matching the untested "mirrored fold"
+    // idea already in QuadSensorsRearHipMirror.ino) -- side by side,
+    // for whatever hip/knee they're CURRENTLY commanded to. Compare
+    // against a real tape-measure reading (distance from the hip pivot
+    // bolt down to the wheel's ground contact point) to see which one
+    // the real hardware actually matches. One real measurement so far
+    // (hip=0, knee=80, measured 275mm) already favours the flipped
+    // hypothesis (44.6mm off vs 115mm off for the current model) -- a
+    // SECOND measurement at a DIFFERENT angle is what's needed to tell
+    // "pure sign error" apart from "sign error plus a KNEE_START
+    // offset" -- pick an angle noticeably different from hip=0/knee=80
+    // for that second point, not a repeat of it.
+    int legs[2] = { RL, RR };
+    const char* names[2] = { "RL", "RR" };
+    for (int n = 0; n < 2; n++) {
+      int i = legs[n];
+      float t1 = radians((float)(hipPos[i] - HIP_START[i]));
+      float t2 = radians((float)(kneePos[i] - KNEE_START[i]));
+      float xCur  = LEG_THIGH_MM * sin(t1) + LEG_CALF_MM * sin(t1 + t2);
+      float yCur  = LEG_THIGH_MM * cos(t1) + LEG_CALF_MM * cos(t1 + t2);
+      float xFlip = LEG_THIGH_MM * sin(t1) + LEG_CALF_MM * sin(t1 - t2);
+      float yFlip = LEG_THIGH_MM * cos(t1) + LEG_CALF_MM * cos(t1 - t2);
+      Serial.print(names[n]); Serial.print(" (hip="); Serial.print(hipPos[i]);
+      Serial.print(" knee="); Serial.print(kneePos[i]); Serial.println("):");
+      Serial.print("  current model:  x="); Serial.print(xCur, 1);
+      Serial.print("mm  height="); Serial.print(yCur, 1); Serial.println("mm");
+      Serial.print("  flipped model:  x="); Serial.print(xFlip, 1);
+      Serial.print("mm  height="); Serial.print(yFlip, 1); Serial.println("mm");
+    }
+    Serial.println("Measure the real hip-pivot-to-ground-contact height (and forward offset if you can) with a tape measure, compare against both.");
+
   } else if (input == "climb_low_prep") {
     commandClimbPose(CLIMB_PREP_LOW);
     Serial.println("Commanding CLIMB_PREP_LOW.");
@@ -2132,7 +2166,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | rear_fk | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {

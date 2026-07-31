@@ -1279,6 +1279,31 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define PRECLIMB_HIP_FR   92
 #define PRECLIMB_KNEE_FR  108
 
+// ============================================================
+// SAFE-KNEE LIFT (FL lift only)
+// Requested directly: before the hip starts lifting the leg, first
+// move the knee to a safe, verified position on its own and let that
+// settle -- confirmed by hand (CLIMB_PREP_TALL/CLIMB_LIFT_TALL) that
+// knee=270 is a safe fold to hold the leg at before the hip does any
+// large motion, rather than moving hip and knee together into unknown
+// combined territory. Only the hip moves during the lift-off itself;
+// the knee is left alone here and only changes later (during the
+// reach) if a step-place is actually in progress.
+//
+// LIFT_LIFTED_HIP_FL=150 matches CLIMB_LIFT_TALL exactly -- the one
+// combination hardware-confirmed (real IMU: Level) to pair a genuinely
+// lifted-looking hip angle with this same safe knee, regardless of
+// which prep pose the leg started from.
+//
+// Declared here (not next to where it's used, further down) because
+// startLower() -- also further down, but textually BEFORE
+// updateLiftSequence() -- needs these as plain #defines, and macros
+// (unlike functions) aren't auto-prototyped by Arduino: they must
+// textually precede their first use in the file.
+// ============================================================
+#define LIFT_SAFE_KNEE_FL   270
+#define LIFT_LIFTED_HIP_FL  150
+
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
@@ -1565,25 +1590,6 @@ void createStablePlatform() {
   for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
   for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
 }
-
-// ============================================================
-// SAFE-KNEE LIFT (FL lift only)
-// Requested directly: before the hip starts lifting the leg, first
-// move the knee to a safe, verified position on its own and let that
-// settle -- confirmed by hand (CLIMB_PREP_TALL/CLIMB_LIFT_TALL) that
-// knee=270 is a safe fold to hold the leg at before the hip does any
-// large motion, rather than moving hip and knee together into unknown
-// combined territory. Only the hip moves during the lift-off itself;
-// the knee is left alone here and only changes later (during the
-// reach) if a step-place is actually in progress.
-//
-// LIFT_LIFTED_HIP_FL=150 matches CLIMB_LIFT_TALL exactly -- the one
-// combination hardware-confirmed (real IMU: Level) to pair a genuinely
-// lifted-looking hip angle with this same safe knee, regardless of
-// which prep pose the leg started from.
-// ============================================================
-#define LIFT_SAFE_KNEE_FL   270
-#define LIFT_LIFTED_HIP_FL  150
 
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {

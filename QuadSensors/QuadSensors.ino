@@ -70,9 +70,11 @@ enum HipIndex { FL = 0, FR, RL, RR, NUM_HIPS };
 
 const int  HIP_PINS[NUM_HIPS]   = { HIP_FL_PIN, HIP_FR_PIN, HIP_RL_PIN, HIP_RR_PIN };
 // FL/FR are mechanically limited to 6/2 as their furthest inward point --
-// going lower risks the leg colliding with/damaging the robot. RL/RR
-// confirmed clash-free all the way down to 0.
-const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   0,   0 };
+// going lower risks the leg colliding with/damaging the robot. RR
+// confirmed clash-free all the way down to 0. RL raised 0->4 after the
+// replacement hip servo: confirmed on hardware that 0 goes far enough
+// to risk pinching a wire, so 4 is the new floor for that leg specifically.
+const int  HIP_MIN[NUM_HIPS]    = {   6,   2,   4,   0 };
 // FL/FR confirmed by manual cautious jogging (from the low/splayed
 // lift stance) to be safe up to 220. RL/RR confirmed clash-free up
 // to 200 -- the rear doesn't need the same reach as the front since

@@ -2,23 +2,22 @@
 // RL HIP SERVO CALIBRATION -- standalone, single-servo sketch
 //
 // Purpose: after replacing the RL hip servo, find its true
-// "straight down" physical angle so HIP_TRIM[RL] in QuadSensors.ino
-// (and QuadSensorsRearHipMirror.ino) can be recalibrated for the new
-// servo -- the old trim (30, see HIP_TRIM[] in QuadSensors.ino) was
-// calibrated for the OLD servo and has no reason to still be correct.
+// "straight down" LOGICAL angle (the same kind of number you'd type
+// as "hip_rl <angle>" in QuadSensors.ino) so HIP_TRIM[RL] there can be
+// recalibrated for the new servo -- the old trim (30, see HIP_TRIM[]
+// in QuadSensors.ino) was calibrated for the OLD servo and has no
+// reason to still be correct.
 //
-// Drives ONLY the RL hip servo, with NO trim applied -- every command
-// here is the raw physical angle sent straight to the horn, so
-// whatever value you find really is the number to put in HIP_TRIM's
-// place (as the new commanded-straight-down reference), exactly the
-// same way every other trim in this project was found (see e.g. git
-// commit 806fb20: jog until the leg is visually/physically confirmed
-// straight down, read back the commanded angle, that IS the new
-// reference point).
-//
-// Uses the exact same 500-2500us / 0-270deg pulse mapping as
-// QuadSensors.ino (SERVO_PULSE_MIN_US/MAX_US), so the number you find
-// here is directly usable there with no conversion.
+// Mirrors QuadSensors.ino's applyHipAngle() exactly: physical = mirror
+// ? (270 - angle) : angle, then mapped 0-270deg -> 500-2500us. Starts
+// with mirror ON, matching HIP_MIRROR[RL]=true in QuadSensors.ino
+// today -- toggle it with 'm' if the replacement servo turns out to
+// spin the opposite way to the old one (which is exactly what you
+// reported seeing). Trim is 0 here on purpose: whatever LOGICAL angle
+// you find straight-down at, minus HIP_START[RL] (30 in QuadSensors.ino),
+// IS the new HIP_TRIM[RL] value, the same way every other trim in this
+// project was found (jog to a known reference pose, read back the
+// commanded angle -- see e.g. git commit 806fb20).
 //
 // Wiring: same RL hip pin as QuadSensors.ino (pin 8). Nothing else
 // needs to be connected -- this sketch does not touch the other three
@@ -38,15 +37,19 @@
 
 Servo hipRL;
 int currentAngle = START_ANGLE;
+bool mirror = true; // matches HIP_MIRROR[RL] in QuadSensors.ino today
 
 void goTo(int angle) {
   angle = constrain(angle, 0, 270);
   currentAngle = angle;
-  int pulse = map(angle, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
+  int physical = mirror ? (270 - angle) : angle;
+  int pulse = map(physical, 0, 270, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   hipRL.writeMicroseconds(pulse);
   Serial.print("RL hip -> ");
   Serial.print(angle);
-  Serial.println(" deg (raw, no trim)");
+  Serial.print(" deg (logical, mirror=");
+  Serial.print(mirror ? "ON" : "OFF");
+  Serial.println(")");
 }
 
 void setup() {
@@ -57,13 +60,16 @@ void setup() {
   Serial.println();
   Serial.println("RL hip servo calibration.");
   Serial.println("Commands:");
-  Serial.println("  <number>   -- go straight to that raw angle (0-270), e.g. 90");
+  Serial.println("  <number>   -- go straight to that logical angle (0-270), e.g. 90");
   Serial.println("  +          -- nudge +1 deg");
   Serial.println("  -          -- nudge -1 deg");
   Serial.println("  ++ / --    -- nudge +5 / -5 deg");
-  Serial.println("Jog until the leg is visually/physically confirmed straight down,");
-  Serial.println("then read the printed angle back -- that's the new HIP_TRIM[RL]");
-  Serial.println("reference point (same method as every other trim in this project).");
+  Serial.println("  m          -- toggle mirror (matches HIP_MIRROR[RL] in QuadSensors.ino)");
+  Serial.println("Jog until, with increasing angle, the thigh swings FORWARD (same as");
+  Serial.println("every other leg) and the leg is visually/physically straight down at");
+  Serial.println("some angle -- that angle minus 30 (HIP_START[RL]) is the new");
+  Serial.println("HIP_TRIM[RL]. Whichever mirror setting gets forward-on-increase is");
+  Serial.println("also the new HIP_MIRROR[RL] value.");
   Serial.println();
 }
 
@@ -81,6 +87,9 @@ void loop() {
     goTo(currentAngle + 5);
   } else if (input == "--") {
     goTo(currentAngle - 5);
+  } else if (input == "m") {
+    mirror = !mirror;
+    goTo(currentAngle); // re-apply at the same logical angle under the new mirror setting
   } else {
     bool numeric = true;
     for (unsigned int i = 0; i < input.length(); i++) {
@@ -90,7 +99,7 @@ void loop() {
     if (numeric) {
       goTo(input.toInt());
     } else {
-      Serial.println("Unknown command. Use a number (0-270), +, -, ++, or --.");
+      Serial.println("Unknown command. Use a number (0-270), +, -, ++, --, or m.");
     }
   }
 }

@@ -97,8 +97,9 @@ const bool HIP_MIRROR[NUM_HIPS] = { false, true, true, false }; // FL, FR, RL, R
 // causing unreliable servo behavior on the rear knees: 40 straight
 // -> trim +10.
 // FR calibrated: 67 looked straight down -> trim +37.
-// RL trim unchanged: 60 straight -> trim +30.
-const int  HIP_TRIM[NUM_HIPS]   = { 14, 37, 30, 10 };
+// RL recalibrated after replacing its hip servo: crouch-low (logical
+// 140) now needs 130 to look level, so trim = 30 + (130-140) = 20.
+const int  HIP_TRIM[NUM_HIPS]   = { 14, 37, 20, 10 };
 
 const char* HIP_NAMES[NUM_HIPS] = { "hip_fl", "hip_fr", "hip_rl", "hip_rr" };
 

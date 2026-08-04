@@ -56,6 +56,26 @@ struct ClimbPose {
 #define KNEE_RR_PIN  33
 
 // ============================================================
+// WHEEL DRIVE MOTOR PINS (L298N, one channel per wheel)
+// Each wheel gets its own IN1/IN2/EN, fully independent in hardware,
+// even though updateDrive()/setWheelSpeeds() below drive all four in
+// sync for now -- see startDrive()'s comment for why (no wheel
+// encoders exist in this codebase, so driving is open-loop/timed).
+// ============================================================
+#define WHEEL_FL_IN1 22
+#define WHEEL_FL_IN2 23
+#define WHEEL_FL_EN   9
+#define WHEEL_FR_IN1 24
+#define WHEEL_FR_IN2 25
+#define WHEEL_FR_EN  10
+#define WHEEL_RL_IN1 26
+#define WHEEL_RL_IN2 27
+#define WHEEL_RL_EN  11
+#define WHEEL_RR_IN1 28
+#define WHEEL_RR_IN2 29
+#define WHEEL_RR_EN  12
+
+// ============================================================
 // VL53L0X XSHUT PINS
 // ============================================================
 #define XSHUT_1   A0
@@ -2385,7 +2405,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_stop | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2471,6 +2491,23 @@ void handleCommand(String input) {
       Serial.println("Cannot start second-leg placement (first leg isn't down-and-holding, is already FR, or a safety abort is active -- send 'lower' first if so).");
     }
 
+  } else if (input.startsWith("drive ")) {
+    String rest = input.substring(6);
+    int    sep  = rest.indexOf(' ');
+    if (sep > 0) {
+      int speed = rest.substring(0, sep).toInt();
+      unsigned long durationMs = (unsigned long)rest.substring(sep + 1).toInt();
+      startDrive(speed, durationMs);
+      Serial.print("Driving at "); Serial.print(speed);
+      Serial.print(" for "); Serial.print(durationMs); Serial.println("ms.");
+    } else {
+      Serial.println("Usage: drive <speed -255..255> <duration_ms>");
+    }
+
+  } else if (input == "drive_stop") {
+    stopWheels();
+    Serial.println("Wheels stopped.");
+
   } else if (input.startsWith("all ")) {
     int angle = input.substring(4).toInt();
     allHips(angle);
@@ -2532,6 +2569,60 @@ void handleCommand(String input) {
 }
 
 // ============================================================
+// WHEEL DRIVE
+// All four wheels driven together (same direction/speed) via one
+// L298N channel per wheel -- see the WHEEL_*_IN1/IN2/EN pin defines
+// above. No wheel encoders exist anywhere in this codebase, so this
+// is open-loop: a commanded speed for a commanded DURATION, timed by
+// millis() (non-blocking, same pattern as the rest of this file), not
+// distance. Whatever real distance a given speed/duration covers has
+// to be found empirically on hardware (time a few runs at a fixed
+// speed over a measured distance) before trusting driveForMs() to hit
+// a specific standoff -- there's no closed-loop correction here.
+// ============================================================
+const int WHEEL_IN1_PINS[NUM_HIPS] = { WHEEL_FL_IN1, WHEEL_FR_IN1, WHEEL_RL_IN1, WHEEL_RR_IN1 };
+const int WHEEL_IN2_PINS[NUM_HIPS] = { WHEEL_FL_IN2, WHEEL_FR_IN2, WHEEL_RL_IN2, WHEEL_RR_IN2 };
+const int WHEEL_EN_PINS[NUM_HIPS]  = { WHEEL_FL_EN,  WHEEL_FR_EN,  WHEEL_RL_EN,  WHEEL_RR_EN  };
+
+bool driveActive = false;
+unsigned long driveStopAtMs = 0;
+
+// Sets all four wheels to the same signed speed: positive = forward,
+// negative = reverse, 0 = stop (both IN pins low, same as an explicit
+// stop -- coasts rather than brakes, which is fine for this use case).
+void setWheelSpeeds(int speed) {
+  speed = constrain(speed, -255, 255);
+  bool forward = speed > 0;
+  bool reverse = speed < 0;
+  int pwm = abs(speed);
+  for (int i = 0; i < NUM_HIPS; i++) {
+    digitalWrite(WHEEL_IN1_PINS[i], forward);
+    digitalWrite(WHEEL_IN2_PINS[i], reverse);
+    analogWrite(WHEEL_EN_PINS[i], pwm);
+  }
+}
+
+void stopWheels() {
+  setWheelSpeeds(0);
+  driveActive = false;
+}
+
+// Starts driving at speed (-255..255) for durationMs, then auto-stops
+// -- see updateDrive(), called from loop(). Cuts short and restarts
+// the timer if a drive is already active (last command wins, same as
+// re-issuing any other move in this file).
+void startDrive(int speed, unsigned long durationMs) {
+  setWheelSpeeds(speed);
+  driveActive = true;
+  driveStopAtMs = millis() + durationMs;
+}
+
+void updateDrive() {
+  if (!driveActive) return;
+  if ((long)(millis() - driveStopAtMs) >= 0) stopWheels();
+}
+
+// ============================================================
 // SETUP
 // ============================================================
 void setup() {
@@ -2560,6 +2651,14 @@ void setup() {
     setKnee(i, KNEE_START[i]);
   }
   Serial.println("Servos OK");
+
+  for (int i = 0; i < NUM_HIPS; i++) {
+    pinMode(WHEEL_IN1_PINS[i], OUTPUT);
+    pinMode(WHEEL_IN2_PINS[i], OUTPUT);
+    pinMode(WHEEL_EN_PINS[i], OUTPUT);
+  }
+  stopWheels();
+  Serial.println("Wheel drive OK");
 
   setupVL53L0X();
   setupMPU6050();
@@ -2606,6 +2705,9 @@ void loop() {
 
   // Pick up new ToF data as soon as it's ready
   pollTofSensors();
+
+  // Auto-stop a timed drive once its duration elapses
+  updateDrive();
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

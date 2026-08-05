@@ -2353,7 +2353,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_stop | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2452,6 +2452,22 @@ void handleCommand(String input) {
       Serial.println("Usage: drive <speed -255..255> <duration_ms>");
     }
 
+  } else if (input.startsWith("drive_to ")) {
+    String rest = input.substring(9);
+    int    sep1 = rest.indexOf(' ');
+    int    sep2 = (sep1 > 0) ? rest.indexOf(' ', sep1 + 1) : -1;
+    if (sep1 > 0 && sep2 > 0) {
+      int speed = rest.substring(0, sep1).toInt();
+      float targetMM = rest.substring(sep1 + 1, sep2).toFloat();
+      unsigned long timeoutMs = (unsigned long)rest.substring(sep2 + 1).toInt();
+      startDriveToTof(speed, targetMM, timeoutMs);
+      Serial.print("Driving at "); Serial.print(speed);
+      Serial.print(" until ToF1 "); Serial.print(speed > 0 ? "<= " : ">= "); Serial.print(targetMM, 0);
+      Serial.print("mm, timeout "); Serial.print(timeoutMs); Serial.println("ms.");
+    } else {
+      Serial.println("Usage: drive_to <speed -255..255> <target_mm> <timeout_ms>");
+    }
+
   } else if (input == "drive_stop") {
     stopWheels();
     Serial.println("Wheels stopped.");
@@ -2541,6 +2557,8 @@ const bool WHEEL_REVERSED[NUM_HIPS] = { true, true, false, false }; // FL, FR, R
 
 bool driveActive = false;
 unsigned long driveStopAtMs = 0;
+float driveTofTargetMM = -1; // -1 = plain timed drive, no ToF stop condition
+bool  driveTofApproaching = false; // true: stop once tof1_mm <= target (closing in); false: stop once tof1_mm >= target (backing away)
 
 // Sets all four wheels to the same signed speed: positive = forward,
 // negative = reverse, 0 = stop (both IN pins low, same as an explicit
@@ -2561,6 +2579,7 @@ void setWheelSpeeds(int speed) {
 void stopWheels() {
   setWheelSpeeds(0);
   driveActive = false;
+  driveTofTargetMM = -1;
 }
 
 // Starts driving at speed (-255..255) for durationMs, then auto-stops
@@ -2571,11 +2590,37 @@ void startDrive(int speed, unsigned long durationMs) {
   setWheelSpeeds(speed);
   driveActive = true;
   driveStopAtMs = millis() + durationMs;
+  driveTofTargetMM = -1;
+}
+
+// Drives toward/away from whatever ToF1 sees, stopping as soon as its
+// LIVE reading crosses targetMM, instead of guessing a speed-to-
+// distance mapping with no encoders to correct it. speed>0 (forward)
+// assumes ToF1's reading is DECREASING (closing in on the step);
+// speed<0 (reverse) assumes it's INCREASING (backing away) -- matches
+// ToF1's existing forward-facing mount used by the step scan. Only
+// meaningful while ToF1 has a real line of sight to what you're
+// measuring against (the step's face) -- this does NOT help driving
+// forward once a leg is already resting on the step, a different
+// problem with no ToF line of sight to use.
+// timeoutMs is a hard safety fallback (same mechanism as the plain
+// timed drive) in case the reading is invalid or never reaches the
+// target -- always stops by then regardless of what ToF1 says.
+void startDriveToTof(int speed, float targetMM, unsigned long timeoutMs) {
+  setWheelSpeeds(speed);
+  driveActive = true;
+  driveStopAtMs = millis() + timeoutMs;
+  driveTofTargetMM = targetMM;
+  driveTofApproaching = (speed > 0);
 }
 
 void updateDrive() {
   if (!driveActive) return;
-  if ((long)(millis() - driveStopAtMs) >= 0) stopWheels();
+  if (driveTofTargetMM >= 0 && tof1_ok) {
+    if (driveTofApproaching  && tof1_mm <= driveTofTargetMM) { stopWheels(); return; }
+    if (!driveTofApproaching && tof1_mm >= driveTofTargetMM) { stopWheels(); return; }
+  }
+  if ((long)(millis() - driveStopAtMs) >= 0) stopWheels(); // safety fallback -- always wins eventually regardless of ToF state
 }
 
 // ============================================================

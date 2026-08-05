@@ -33,6 +33,15 @@ const int WHEEL_IN1_PINS[NUM_WHEELS] = { WHEEL_FL_IN1, WHEEL_FR_IN1, WHEEL_RL_IN
 const int WHEEL_IN2_PINS[NUM_WHEELS] = { WHEEL_FL_IN2, WHEEL_FR_IN2, WHEEL_RL_IN2, WHEEL_RR_IN2 };
 const int WHEEL_EN_PINS[NUM_WHEELS]  = { WHEEL_FL_EN,  WHEEL_FR_EN,  WHEEL_RL_EN,  WHEEL_RR_EN  };
 
+// Confirmed on hardware: 'all 150' spun FL/FR backward and RL/RR
+// forward -- the front and rear axles are mounted as mirror images of
+// each other, so the same electrical signal drives them opposite real-
+// world directions. Reversing FL/FR here (swapping which IN pin gets
+// which signal) makes positive speed mean the same real-world
+// direction on all four, the same fix as HIP_MIRROR[] for the hip
+// servos.
+const bool WHEEL_REVERSED[NUM_WHEELS] = { true, true, false, false };
+
 int currentSpeed[NUM_WHEELS] = { 0, 0, 0, 0 };
 
 // Sets one wheel's speed: positive = forward, negative = reverse,
@@ -42,6 +51,7 @@ void setWheel(int w, int speed) {
   currentSpeed[w] = speed;
   bool forward = speed > 0;
   bool reverse = speed < 0;
+  if (WHEEL_REVERSED[w]) { bool t = forward; forward = reverse; reverse = t; }
   digitalWrite(WHEEL_IN1_PINS[w], forward);
   digitalWrite(WHEEL_IN2_PINS[w], reverse);
   analogWrite(WHEEL_EN_PINS[w], abs(speed));

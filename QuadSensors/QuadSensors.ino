@@ -2532,6 +2532,13 @@ const int WHEEL_IN1_PINS[NUM_HIPS] = { WHEEL_FL_IN1, WHEEL_FR_IN1, WHEEL_RL_IN1,
 const int WHEEL_IN2_PINS[NUM_HIPS] = { WHEEL_FL_IN2, WHEEL_FR_IN2, WHEEL_RL_IN2, WHEEL_RR_IN2 };
 const int WHEEL_EN_PINS[NUM_HIPS]  = { WHEEL_FL_EN,  WHEEL_FR_EN,  WHEEL_RL_EN,  WHEEL_RR_EN  };
 
+// Confirmed on hardware (WheelDriveTest sketch): the front and rear
+// axles are mounted as mirror images of each other, so the same
+// electrical signal spins FL/FR backward while RL/RR go forward.
+// Reversing FL/FR here makes positive speed mean the same real-world
+// direction on all four -- same fix as HIP_MIRROR[] for the hips.
+const bool WHEEL_REVERSED[NUM_HIPS] = { true, true, false, false }; // FL, FR, RL, RR
+
 bool driveActive = false;
 unsigned long driveStopAtMs = 0;
 
@@ -2540,10 +2547,11 @@ unsigned long driveStopAtMs = 0;
 // stop -- coasts rather than brakes, which is fine for this use case).
 void setWheelSpeeds(int speed) {
   speed = constrain(speed, -255, 255);
-  bool forward = speed > 0;
-  bool reverse = speed < 0;
   int pwm = abs(speed);
   for (int i = 0; i < NUM_HIPS; i++) {
+    bool forward = speed > 0;
+    bool reverse = speed < 0;
+    if (WHEEL_REVERSED[i]) { bool t = forward; forward = reverse; reverse = t; }
     digitalWrite(WHEEL_IN1_PINS[i], forward);
     digitalWrite(WHEEL_IN2_PINS[i], reverse);
     analogWrite(WHEEL_EN_PINS[i], pwm);

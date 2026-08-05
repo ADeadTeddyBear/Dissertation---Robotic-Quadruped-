@@ -58,16 +58,16 @@ struct ClimbPose {
 // ============================================================
 #define WHEEL_FL_IN1 26
 #define WHEEL_FL_IN2 27
-#define WHEEL_FL_EN   9
+#define WHEEL_FL_EN  11
 #define WHEEL_FR_IN1 28
 #define WHEEL_FR_IN2 29
-#define WHEEL_FR_EN  10
+#define WHEEL_FR_EN  12
 #define WHEEL_RL_IN1 24
 #define WHEEL_RL_IN2 25
-#define WHEEL_RL_EN  11
+#define WHEEL_RL_EN  10
 #define WHEEL_RR_IN1 22
 #define WHEEL_RR_IN2 23
-#define WHEEL_RR_EN  12
+#define WHEEL_RR_EN   9
 
 // ============================================================
 // VL53L0X XSHUT PINS

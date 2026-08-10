@@ -2682,8 +2682,17 @@ void updateDrive() {
 // UNTESTED ON HARDWARE: turn speed/pulse/settle timing below are
 // starting guesses, not measured. Watch the first run closely and be
 // ready to send 'drive_stop' if it doesn't behave.
-// ============================================================
-#define SQUARE_TOLERANCE_MM  10.0
+//
+// TOLERANCE: the two sensors are mounted right next to each other, so
+// the signal is small -- confirmed on hardware at 3.0 (~10mm sensor
+// separation * sin(45deg) matches almost exactly). At more realistic
+// small misalignments (10-20deg) the expected signal is only 2-3mm,
+// so a 10mm tolerance (the original guess) would call the robot
+// "square" at almost any angle and never correct anything. Lowered
+// well below the smallest signal worth reacting to; if this turns out
+// tighter than the sensors' actual noise floor (causing it to never
+// settle/oscillate), loosen it back up based on what's actually seen.
+#define SQUARE_TOLERANCE_MM  3.0
 #define SQUARE_TURN_SPEED    120
 #define SQUARE_TURN_PULSE_MS 150
 #define SQUARE_SETTLE_MS     300

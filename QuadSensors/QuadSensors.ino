@@ -37,6 +37,12 @@ SquareState   squareState = SQUARE_IDLE;
 int           squareAttempts = 0;
 unsigned long squareStateStartMs = 0;
 
+// Same reason: handleCommand()'s drive_stop branch cancels an
+// in-progress turn test, but comes before the TURN TEST section
+// further down that actually defines this.
+bool          turnTestActive = false;
+unsigned long turnTestStopAtMs = 0;
+
 // ============================================================
 // HIP SERVO PINS
 // ============================================================
@@ -2803,9 +2809,6 @@ void applySquareTurn(float adjustedDiff) {
 // just their difference changing), and no amount of ToF-side tuning
 // fixes a chassis that isn't doing a clean pivot turn.
 // ============================================================
-bool turnTestActive = false;
-unsigned long turnTestStopAtMs = 0;
-
 bool startTurnTest(int speed, unsigned long durationMs) {
   if (squareState != SQUARE_IDLE || driveActive || turnTestActive) return false;
   setWheelSpeedsLR(speed, -speed);

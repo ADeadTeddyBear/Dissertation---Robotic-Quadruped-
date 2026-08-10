@@ -26,6 +26,19 @@ struct ClimbPose {
   int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
 };
 
+// Same reason as ClimbPose above: handleCommand() (which starts/
+// cancels a square-up) and startDrive()/startDriveToTof() (which
+// check it to avoid driving while turning) both come before the
+// SQUARE-UP section further down that actually uses this -- only
+// functions are auto-prototyped by Arduino, not enums or plain
+// globals, so this has to live here instead.
+enum SquareState { SQUARE_IDLE, SQUARE_TURN_PULSE, SQUARE_SETTLE, SQUARE_VERIFY };
+SquareState   squareState = SQUARE_IDLE;
+int           squareTurnSign = 1;
+float         squareLastDiff = 0;
+int           squareAttempts = 0;
+unsigned long squareStateStartMs = 0;
+
 // ============================================================
 // HIP SERVO PINS
 // ============================================================
@@ -2353,7 +2366,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2470,7 +2483,15 @@ void handleCommand(String input) {
 
   } else if (input == "drive_stop") {
     stopWheels();
+    squareState = SQUARE_IDLE; // also cancels an in-progress square-up
     Serial.println("Wheels stopped.");
+
+  } else if (input == "square") {
+    if (startSquareUp()) {
+      Serial.println("Squaring up (turning until ToF1/ToF2 agree)...");
+    } else {
+      Serial.println("Cannot start square-up (already running, a drive is active, or ToF1/ToF2 reading is invalid).");
+    }
 
   } else if (input.startsWith("all ")) {
     int angle = input.substring(4).toInt();
@@ -2560,20 +2581,31 @@ unsigned long driveStopAtMs = 0;
 float driveTofTargetMM = -1; // -1 = plain timed drive, no ToF stop condition
 bool  driveTofApproaching = false; // true: stop once tof1_mm <= target (closing in); false: stop once tof1_mm >= target (backing away)
 
-// Sets all four wheels to the same signed speed: positive = forward,
-// negative = reverse, 0 = stop (both IN pins low, same as an explicit
-// stop -- coasts rather than brakes, which is fine for this use case).
-void setWheelSpeeds(int speed) {
+// Sets one wheel's signed speed: positive = forward, negative =
+// reverse, 0 = stop (both IN pins low, coasts rather than brakes).
+void setOneWheel(int i, int speed) {
   speed = constrain(speed, -255, 255);
-  int pwm = abs(speed);
-  for (int i = 0; i < NUM_HIPS; i++) {
-    bool forward = speed > 0;
-    bool reverse = speed < 0;
-    if (WHEEL_REVERSED[i]) { bool t = forward; forward = reverse; reverse = t; }
-    digitalWrite(WHEEL_IN1_PINS[i], forward);
-    digitalWrite(WHEEL_IN2_PINS[i], reverse);
-    analogWrite(WHEEL_EN_PINS[i], pwm);
-  }
+  bool forward = speed > 0;
+  bool reverse = speed < 0;
+  if (WHEEL_REVERSED[i]) { bool t = forward; forward = reverse; reverse = t; }
+  digitalWrite(WHEEL_IN1_PINS[i], forward);
+  digitalWrite(WHEEL_IN2_PINS[i], reverse);
+  analogWrite(WHEEL_EN_PINS[i], abs(speed));
+}
+
+// Sets all four wheels to the same signed speed -- see setOneWheel().
+void setWheelSpeeds(int speed) {
+  for (int i = 0; i < NUM_HIPS; i++) setOneWheel(i, speed);
+}
+
+// Independent left/right speeds for in-place turning -- FL+RL share
+// one side, FR+RR the other (matches HIP_OFFSET_Y[]: FL/RL carry the
+// same sign, FR/RR the other). Used by the square-up routine below.
+void setWheelSpeedsLR(int leftSpeed, int rightSpeed) {
+  setOneWheel(FL, leftSpeed);
+  setOneWheel(RL, leftSpeed);
+  setOneWheel(FR, rightSpeed);
+  setOneWheel(RR, rightSpeed);
 }
 
 void stopWheels() {
@@ -2587,6 +2619,10 @@ void stopWheels() {
 // the timer if a drive is already active (last command wins, same as
 // re-issuing any other move in this file).
 void startDrive(int speed, unsigned long durationMs) {
+  if (squareState != SQUARE_IDLE) {
+    Serial.println("Cannot drive: square-up is in progress.");
+    return;
+  }
   setWheelSpeeds(speed);
   driveActive = true;
   driveStopAtMs = millis() + durationMs;
@@ -2607,6 +2643,10 @@ void startDrive(int speed, unsigned long durationMs) {
 // timed drive) in case the reading is invalid or never reaches the
 // target -- always stops by then regardless of what ToF1 says.
 void startDriveToTof(int speed, float targetMM, unsigned long timeoutMs) {
+  if (squareState != SQUARE_IDLE) {
+    Serial.println("Cannot drive: square-up is in progress.");
+    return;
+  }
   setWheelSpeeds(speed);
   driveActive = true;
   driveStopAtMs = millis() + timeoutMs;
@@ -2621,6 +2661,101 @@ void updateDrive() {
     if (!driveTofApproaching && tof1_mm >= driveTofTargetMM) { stopWheels(); return; }
   }
   if ((long)(millis() - driveStopAtMs) >= 0) stopWheels(); // safety fallback -- always wins eventually regardless of ToF state
+}
+
+// ============================================================
+// SQUARE-UP: turn in place until ToF1 and ToF2 agree, meaning the
+// robot is perpendicular to whatever flat face is ahead (the step).
+// ToF1 sits toward the left, ToF2 toward the right (both centre-
+// mounted, forward-facing) -- if the robot is yawed relative to the
+// step's face, one beam travels a shorter path to it than the other;
+// square is where both read the same.
+//
+// Turn direction is NOT assumed -- there's no way to verify from here
+// which way "positive turn" actually points on this hardware. Instead
+// this turns a small pulse, re-measures, and flips direction if the
+// gap got WORSE instead of better, so it converges correctly
+// regardless of which way it guessed first. Same self-correcting
+// principle as everything else in this file that can't be verified
+// without live hardware feedback.
+//
+// UNTESTED ON HARDWARE: turn speed/pulse/settle timing below are
+// starting guesses, not measured. Watch the first run closely and be
+// ready to send 'drive_stop' if it doesn't behave.
+// ============================================================
+#define SQUARE_TOLERANCE_MM  10.0
+#define SQUARE_TURN_SPEED    120
+#define SQUARE_TURN_PULSE_MS 150
+#define SQUARE_SETTLE_MS     300
+#define SQUARE_MAX_ATTEMPTS  20
+
+bool startSquareUp() {
+  if (squareState != SQUARE_IDLE || driveActive) return false;
+  if (!tof1_ok || !tof2_ok) {
+    Serial.println("Cannot square: ToF1/ToF2 reading invalid.");
+    return false;
+  }
+  squareLastDiff = (float)tof1_mm - (float)tof2_mm;
+  if (fabs(squareLastDiff) <= SQUARE_TOLERANCE_MM) {
+    Serial.println("Already square (within tolerance).");
+    return true;
+  }
+  squareTurnSign = (squareLastDiff > 0) ? 1 : -1; // initial guess -- self-corrects below if wrong
+  squareAttempts = 0;
+  setWheelSpeedsLR(SQUARE_TURN_SPEED * squareTurnSign, -SQUARE_TURN_SPEED * squareTurnSign);
+  squareStateStartMs = millis();
+  squareState = SQUARE_TURN_PULSE;
+  return true;
+}
+
+void updateSquareUp() {
+  if (squareState == SQUARE_IDLE) return;
+
+  if (squareState == SQUARE_TURN_PULSE) {
+    if (millis() - squareStateStartMs < SQUARE_TURN_PULSE_MS) return;
+    setWheelSpeedsLR(0, 0);
+    squareStateStartMs = millis();
+    squareState = SQUARE_SETTLE;
+    return;
+  }
+
+  if (squareState == SQUARE_SETTLE) {
+    if (millis() - squareStateStartMs < SQUARE_SETTLE_MS) return;
+    squareState = SQUARE_VERIFY;
+    return;
+  }
+
+  // SQUARE_VERIFY
+  if (!tof1_ok || !tof2_ok) {
+    Serial.println("Square aborted: ToF reading lost mid-maneuver.");
+    squareState = SQUARE_IDLE;
+    return;
+  }
+  float diff = (float)tof1_mm - (float)tof2_mm;
+  Serial.print("Square check: ToF1="); Serial.print(tof1_mm);
+  Serial.print(" ToF2="); Serial.print(tof2_mm);
+  Serial.print(" diff="); Serial.println(diff, 0);
+
+  if (fabs(diff) <= SQUARE_TOLERANCE_MM) {
+    Serial.println("Square: aligned.");
+    squareState = SQUARE_IDLE;
+    return;
+  }
+
+  squareAttempts++;
+  if (squareAttempts >= SQUARE_MAX_ATTEMPTS) {
+    Serial.println("Square aborted: too many attempts, not converging.");
+    squareState = SQUARE_IDLE;
+    return;
+  }
+
+  // Gap didn't shrink -- last guess turned the wrong way, flip it.
+  if (fabs(diff) >= fabs(squareLastDiff)) squareTurnSign = -squareTurnSign;
+  squareLastDiff = diff;
+
+  setWheelSpeedsLR(SQUARE_TURN_SPEED * squareTurnSign, -SQUARE_TURN_SPEED * squareTurnSign);
+  squareStateStartMs = millis();
+  squareState = SQUARE_TURN_PULSE;
 }
 
 // ============================================================
@@ -2709,6 +2844,9 @@ void loop() {
 
   // Auto-stop a timed drive once its duration elapses
   updateDrive();
+
+  // Step any in-progress square-up (turn until ToF1/ToF2 agree) forward
+  updateSquareUp();
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

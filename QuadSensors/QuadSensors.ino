@@ -34,8 +34,6 @@ struct ClimbPose {
 // globals, so this has to live here instead.
 enum SquareState { SQUARE_IDLE, SQUARE_TURN_PULSE, SQUARE_SETTLE, SQUARE_VERIFY };
 SquareState   squareState = SQUARE_IDLE;
-int           squareTurnSign = 1;
-float         squareLastDiff = 0;
 int           squareAttempts = 0;
 unsigned long squareStateStartMs = 0;
 
@@ -2671,13 +2669,15 @@ void updateDrive() {
 // step's face, one beam travels a shorter path to it than the other;
 // square is where both read the same.
 //
-// Turn direction is NOT assumed -- there's no way to verify from here
-// which way "positive turn" actually points on this hardware. Instead
-// this turns a small pulse, re-measures, and flips direction if the
-// gap got WORSE instead of better, so it converges correctly
-// regardless of which way it guessed first. Same self-correcting
-// principle as everything else in this file that can't be verified
-// without live hardware feedback.
+// Turn direction confirmed by hand on real hardware -- see
+// applySquareTurn(): ToF1 lower than ToF2 means reverse the left
+// wheels/forward the right wheels, opposite the other way. An earlier
+// version guessed a direction once and self-corrected by comparing
+// consecutive readings to see if the gap got better or worse, but
+// that comparison is itself noise-prone at this small a signal --
+// confirmed on hardware to look like it was moving the robot
+// randomly. Direction is now recomputed fresh from the current
+// reading every pulse instead.
 //
 // UNTESTED ON HARDWARE: turn speed/pulse/settle timing below are
 // starting guesses, not measured. Watch the first run closely and be
@@ -2698,20 +2698,33 @@ void updateDrive() {
 #define SQUARE_SETTLE_MS     300
 #define SQUARE_MAX_ATTEMPTS  20
 
+// diff = tof1 - tof2. Confirmed by hand which way this should turn:
+// ToF1 reading LOWER than ToF2 (diff<0) -> reverse the left wheels,
+// forward the right wheels. Opposite when ToF1 reads higher. Computed
+// fresh from the CURRENT diff every pulse, not guessed once and
+// corrected from a noisy better/worse comparison -- that self-
+// correcting version was confirmed on hardware to look like it was
+// moving the robot randomly, since comparing two noisy consecutive
+// readings to infer "did it get better" is itself noise-prone when
+// the signal is this small (see SQUARE_TOLERANCE_MM's comment).
+void applySquareTurn(float diff) {
+  int sign = (diff < 0) ? -1 : 1;
+  setWheelSpeedsLR(SQUARE_TURN_SPEED * sign, -SQUARE_TURN_SPEED * sign);
+}
+
 bool startSquareUp() {
   if (squareState != SQUARE_IDLE || driveActive) return false;
   if (!tof1_ok || !tof2_ok) {
     Serial.println("Cannot square: ToF1/ToF2 reading invalid.");
     return false;
   }
-  squareLastDiff = (float)tof1_mm - (float)tof2_mm;
-  if (fabs(squareLastDiff) <= SQUARE_TOLERANCE_MM) {
+  float diff = (float)tof1_mm - (float)tof2_mm;
+  if (fabs(diff) <= SQUARE_TOLERANCE_MM) {
     Serial.println("Already square (within tolerance).");
     return true;
   }
-  squareTurnSign = (squareLastDiff > 0) ? 1 : -1; // initial guess -- self-corrects below if wrong
   squareAttempts = 0;
-  setWheelSpeedsLR(SQUARE_TURN_SPEED * squareTurnSign, -SQUARE_TURN_SPEED * squareTurnSign);
+  applySquareTurn(diff);
   squareStateStartMs = millis();
   squareState = SQUARE_TURN_PULSE;
   return true;
@@ -2758,11 +2771,7 @@ void updateSquareUp() {
     return;
   }
 
-  // Gap didn't shrink -- last guess turned the wrong way, flip it.
-  if (fabs(diff) >= fabs(squareLastDiff)) squareTurnSign = -squareTurnSign;
-  squareLastDiff = diff;
-
-  setWheelSpeedsLR(SQUARE_TURN_SPEED * squareTurnSign, -SQUARE_TURN_SPEED * squareTurnSign);
+  applySquareTurn(diff);
   squareStateStartMs = millis();
   squareState = SQUARE_TURN_PULSE;
 }

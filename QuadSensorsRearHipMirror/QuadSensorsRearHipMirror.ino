@@ -1406,6 +1406,23 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // stop can pass a stance that hasn't actually finished moving yet.
 #define LIFT_SETTLE_DWELL_MS 3000
 
+// Before lifting/tucking the leg for a step-place, reverse away from
+// the step by this much extra clearance (using the wheels, not the
+// legs) -- creates room for the knee-safe/hip-lift swing to happen
+// without the leg (or its wheel) clipping the step's face, instead of
+// relying on how tightly the knee folds (confirmed on hardware to
+// bump the step regardless of fold tightness -- see LIFT_REVERSE).
+// The remeasure step right after this naturally re-samples the
+// forward distance from the NEW (farther) position, so no separate
+// "return to the original distance" step or extra distance math is
+// needed -- the rest of the reach sequence just reaches further.
+//
+// UNTESTED ON HARDWARE: this distance is a starting guess, not
+// measured. Watch closely and be ready to catch/support the robot.
+#define LIFT_REVERSE_CLEARANCE_MM 150.0
+#define LIFT_REVERSE_SPEED        -150
+#define LIFT_REVERSE_TIMEOUT_MS   8000
+
 // How far (degrees) to sink all four legs, right after the stable
 // platform settles and before the actual lift begins, to re-measure
 // the step's forward distance with a fresh, LIVE ToF1 reading instead
@@ -1493,7 +1510,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_SAFE_KNEE_FR   270
 #define LIFT_LIFTED_HIP_FR  150
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1822,6 +1839,24 @@ void createStablePlatform() {
   for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
 }
 
+// Sinks all four legs to get ToF1's beam back below the step's height
+// for a fresh reading, then moves on to LIFT_REMEASURE_DOWN -- see
+// REMEASURE_LOWER_DEG's comment. Factored out so both LIFT_SETTLING
+// (the normal path) and LIFT_REVERSE (after backing away for
+// clearance) can trigger it the same way.
+void startLiftSink() {
+  setHip(FL, hipPos[FL] + REMEASURE_LOWER_DEG);
+  setKnee(FL, kneePos[FL] - REMEASURE_LOWER_DEG);
+  setHip(FR, hipPos[FR] + REMEASURE_LOWER_DEG);
+  setKnee(FR, kneePos[FR] - REMEASURE_LOWER_DEG);
+  setKnee(RL, kneePos[RL] - REMEASURE_LOWER_DEG);
+  setKnee(RR, kneePos[RR] - REMEASURE_LOWER_DEG);
+  unsigned long dur = 0;
+  for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
+  for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
+  liftState = LIFT_REMEASURE_DOWN;
+}
+
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
 void updateLiftSequence() {
   // The reactive tilt-abort net is deliberately OFF during LIFT_RAISING,
@@ -1838,10 +1873,14 @@ void updateLiftSequence() {
   // there, just not mid-reposition. The reactive net re-arms from
   // LIFT_TUCK onward, where the real risk (FL's own mass swinging
   // through the reach) actually lives.
+  // LIFT_REVERSE is excluded too -- it's a wheeled reposition with
+  // every leg still planted/unmoving, the same "expected transient,
+  // not a real fall" category as the states above it, not the
+  // leg-swinging risk the net exists to catch.
   if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
       liftState != LIFT_RAISING && liftState != LIFT_SHIFTING &&
-      liftState != LIFT_SETTLING && liftState != LIFT_REMEASURE_DOWN &&
-      liftState != LIFT_REMEASURE_UP) {
+      liftState != LIFT_SETTLING && liftState != LIFT_REVERSE &&
+      liftState != LIFT_REMEASURE_DOWN && liftState != LIFT_REMEASURE_UP) {
     if (checkLiftTiltSafety()) return;
   }
 
@@ -1999,19 +2038,17 @@ void updateLiftSequence() {
       }
     }
     if (liftIsStepPlace) {
-      // Re-measure the step's forward distance with a fresh, LIVE
-      // ToF1 reading before committing to the reach -- see
-      // REMEASURE_LOWER_DEG above for why a sink is needed first.
-      setHip(FL, hipPos[FL] + REMEASURE_LOWER_DEG);
-      setKnee(FL, kneePos[FL] - REMEASURE_LOWER_DEG);
-      setHip(FR, hipPos[FR] + REMEASURE_LOWER_DEG);
-      setKnee(FR, kneePos[FR] - REMEASURE_LOWER_DEG);
-      setKnee(RL, kneePos[RL] - REMEASURE_LOWER_DEG);
-      setKnee(RR, kneePos[RR] - REMEASURE_LOWER_DEG);
-      unsigned long dur = 0;
-      for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
-      for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
-      liftState = LIFT_REMEASURE_DOWN;
+      // Reverse away from the step first -- see LIFT_REVERSE_CLEARANCE_MM's
+      // comment above. Skipped (straight to the sink/remeasure) if
+      // ToF1 isn't currently valid, since reversing a measured
+      // distance blind isn't safe.
+      if (tof1_ok) {
+        startDriveToTof(LIFT_REVERSE_SPEED, (float)tof1_mm + LIFT_REVERSE_CLEARANCE_MM, LIFT_REVERSE_TIMEOUT_MS);
+        liftState = LIFT_REVERSE;
+      } else {
+        Serial.println("Skipping pre-lift reverse: ToF1 reading invalid.");
+        startLiftSink();
+      }
     } else {
       // Step 3 of 3 (measure / stable platform / lift), part A: move
       // the knee ALONE to its safe position first -- see SAFE-KNEE
@@ -2021,6 +2058,10 @@ void updateLiftSequence() {
       setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
       liftState = LIFT_KNEE_SAFE;
     }
+
+  } else if (liftState == LIFT_REVERSE) {
+    if (driveActive) return; // still backing away (or timed out -- either way driveActive clears on its own)
+    startLiftSink();
 
   } else if (liftState == LIFT_REMEASURE_DOWN) {
     {

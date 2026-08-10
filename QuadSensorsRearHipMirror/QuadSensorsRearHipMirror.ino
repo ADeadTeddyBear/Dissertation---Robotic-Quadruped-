@@ -2745,8 +2745,13 @@ void updateDrive() {
 // tighter than the sensors' actual noise floor (causing it to never
 // settle/oscillate), loosen it back up based on what's actually seen.
 #define SQUARE_TOLERANCE_MM  3.0
-#define SQUARE_TURN_SPEED    120
-#define SQUARE_TURN_PULSE_MS 150
+#define SQUARE_TURN_SPEED    150
+// Raised 150->400: confirmed on hardware the original pulse was too
+// short to produce a visible/meaningful turn per step (also confounded
+// by a wire that had fallen out of one motor driver at the time,
+// making earlier runs unreliable regardless). Retune from here based
+// on what an actual pulse now moves the robot by.
+#define SQUARE_TURN_PULSE_MS 400
 #define SQUARE_SETTLE_MS     300
 #define SQUARE_MAX_ATTEMPTS  20
 

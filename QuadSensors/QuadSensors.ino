@@ -1368,10 +1368,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // without the leg (or its wheel) clipping the step's face, instead of
 // relying on how tightly the knee folds (confirmed on hardware to
 // bump the step regardless of fold tightness -- see LIFT_REVERSE).
-// The remeasure step right after this naturally re-samples the
-// forward distance from the NEW (farther) position, so no separate
-// "return to the original distance" step or extra distance math is
-// needed -- the rest of the reach sequence just reaches further.
+// liftStepForwardMM is bumped by exactly this much at the same time
+// (see LIFT_REMEASURE_DOWN), so the rest of the reach sequence just
+// reaches further -- no separate distance math needed.
+//
+// This has to close the loop against ToF1 from the SUNK stance (in
+// LIFT_REMEASURE_DOWN, once tof1_ok is already proven true there), not
+// straight out of LIFT_SETTLING at the tall platform stance -- ToF1's
+// beam has already cleared over the step's top at that height (see
+// REMEASURE_LOWER_DEG below), so a reverse target computed from a
+// reading taken there is reading empty space/whatever's beyond the
+// step, not the step itself. Confirmed on hardware: this drove the
+// full LIFT_REVERSE_TIMEOUT_MS backward (liftStepForwardMM jumped from
+// ~279mm to 615mm) instead of stopping ~150mm out, and the resulting
+// reach was aborted as unreachable.
 //
 // UNTESTED ON HARDWARE: this distance is a starting guess, not
 // measured. Watch closely and be ready to catch/support the robot.
@@ -1797,9 +1807,10 @@ void createStablePlatform() {
 
 // Sinks all four legs to get ToF1's beam back below the step's height
 // for a fresh reading, then moves on to LIFT_REMEASURE_DOWN -- see
-// REMEASURE_LOWER_DEG's comment. Factored out so both LIFT_SETTLING
-// (the normal path) and LIFT_REVERSE (after backing away for
-// clearance) can trigger it the same way.
+// REMEASURE_LOWER_DEG's comment. Called from LIFT_SETTLING for a
+// step-place; LIFT_REMEASURE_DOWN itself triggers the pre-lift reverse
+// once THAT reading confirms ToF1 can actually see the step (see
+// LIFT_REVERSE_CLEARANCE_MM's comment).
 void startLiftSink() {
   setHip(FL, hipPos[FL] + REMEASURE_LOWER_DEG);
   setKnee(FL, kneePos[FL] - REMEASURE_LOWER_DEG);
@@ -1994,17 +2005,7 @@ void updateLiftSequence() {
       }
     }
     if (liftIsStepPlace) {
-      // Reverse away from the step first -- see LIFT_REVERSE_CLEARANCE_MM's
-      // comment above. Skipped (straight to the sink/remeasure) if
-      // ToF1 isn't currently valid, since reversing a measured
-      // distance blind isn't safe.
-      if (tof1_ok) {
-        startDriveToTof(LIFT_REVERSE_SPEED, (float)tof1_mm + LIFT_REVERSE_CLEARANCE_MM, LIFT_REVERSE_TIMEOUT_MS);
-        liftState = LIFT_REVERSE;
-      } else {
-        Serial.println("Skipping pre-lift reverse: ToF1 reading invalid.");
-        startLiftSink();
-      }
+      startLiftSink();
     } else {
       // Step 3 of 3 (measure / stable platform / lift), part A: move
       // the knee ALONE to its safe position first -- see SAFE-KNEE
@@ -2015,10 +2016,6 @@ void updateLiftSequence() {
       liftState = LIFT_KNEE_SAFE;
     }
 
-  } else if (liftState == LIFT_REVERSE) {
-    if (driveActive) return; // still backing away (or timed out -- either way driveActive clears on its own)
-    startLiftSink();
-
   } else if (liftState == LIFT_REMEASURE_DOWN) {
     {
       bool allDone = true;
@@ -2028,15 +2025,38 @@ void updateLiftSequence() {
     // Settled at the lower height -- take the live reading now, while
     // the beam should actually be able to see the step's front face.
     pollTofSensors();
+    bool reversing = false;
     if (tof1_ok) {
       float freshForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
       Serial.print("Re-measured step distance: "); Serial.print(freshForwardMM, 0);
       Serial.print("mm forward (scan estimate was "); Serial.print(liftStepForwardMM, 0);
       Serial.println("mm).");
       liftStepForwardMM = freshForwardMM;
+
+      // Back away for tuck/lift clearance NOW, while tof1_mm is known
+      // good -- see LIFT_REVERSE_CLEARANCE_MM's comment above for why
+      // this can't happen any earlier in the sequence. liftStepForwardMM
+      // is bumped by the same clearance amount here rather than
+      // re-measuring again after the reverse -- the beam won't
+      // reliably see the step's face again until the NEXT sink anyway.
+      if (liftIsStepPlace) {
+        startDriveToTof(LIFT_REVERSE_SPEED, (float)tof1_mm + LIFT_REVERSE_CLEARANCE_MM, LIFT_REVERSE_TIMEOUT_MS);
+        liftStepForwardMM += LIFT_REVERSE_CLEARANCE_MM;
+        liftState = LIFT_REVERSE;
+        reversing = true;
+      }
     } else {
       Serial.println("Re-measure: ToF1 reading invalid, keeping the scan-derived estimate.");
+      if (liftIsStepPlace) Serial.println("Skipping pre-lift reverse: ToF1 reading invalid.");
     }
+    if (!reversing) {
+      // Back to the verified stance before continuing.
+      createStablePlatform();
+      liftState = LIFT_REMEASURE_UP;
+    }
+
+  } else if (liftState == LIFT_REVERSE) {
+    if (driveActive) return; // still backing away (or timed out -- either way driveActive clears on its own)
     // Back to the verified stance before continuing.
     createStablePlatform();
     liftState = LIFT_REMEASURE_UP;

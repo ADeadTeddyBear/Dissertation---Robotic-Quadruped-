@@ -50,6 +50,14 @@ unsigned long squareCurrentPulseMs = 0; // set by applySquareTurn(), proportiona
 bool          turnTestActive = false;
 unsigned long turnTestStopAtMs = 0;
 
+// Same reason again: LIFT_REVERSE (in updateLiftSequence(), well
+// above the DRIVE section that normally defines these) needs to read
+// driveActive to know when the pre-lift reverse has finished.
+bool          driveActive = false;
+unsigned long driveStopAtMs = 0;
+float         driveTofTargetMM = -1; // -1 = plain timed drive, no ToF stop condition
+bool          driveTofApproaching = false; // true: stop once tof1_mm <= target (closing in); false: stop once tof1_mm >= target (backing away)
+
 // ============================================================
 // HIP SERVO PINS
 // ============================================================
@@ -2728,11 +2736,6 @@ const int WHEEL_EN_PINS[NUM_HIPS]  = { WHEEL_FL_EN,  WHEEL_FR_EN,  WHEEL_RL_EN, 
 // Reversing FL/FR here makes positive speed mean the same real-world
 // direction on all four -- same fix as HIP_MIRROR[] for the hips.
 const bool WHEEL_REVERSED[NUM_HIPS] = { true, true, false, false }; // FL, FR, RL, RR
-
-bool driveActive = false;
-unsigned long driveStopAtMs = 0;
-float driveTofTargetMM = -1; // -1 = plain timed drive, no ToF stop condition
-bool  driveTofApproaching = false; // true: stop once tof1_mm <= target (closing in); false: stop once tof1_mm >= target (backing away)
 
 // Sets one wheel's signed speed: positive = forward, negative =
 // reverse, 0 = stop (both IN pins low, coasts rather than brakes).

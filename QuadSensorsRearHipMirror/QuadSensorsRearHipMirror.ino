@@ -2914,6 +2914,11 @@ bool startSquareUp() {
     return false;
   }
   float adjustedDiff = tof1Filtered() - tof2Filtered() - SQUARE_DIFF_OFFSET_MM;
+  Serial.print("Square check: ToF1="); Serial.print(tof1_mm);
+  Serial.print(" ToF2="); Serial.print(tof2_mm);
+  Serial.print(" (filtered "); Serial.print(tof1Filtered(), 0);
+  Serial.print("/"); Serial.print(tof2Filtered(), 0);
+  Serial.print(") adjustedDiff="); Serial.println(adjustedDiff, 0);
   if (fabs(adjustedDiff) <= SQUARE_TOLERANCE_MM) {
     Serial.println("Already square (within tolerance).");
     return true;

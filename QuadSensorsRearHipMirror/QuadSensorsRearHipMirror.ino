@@ -2455,7 +2455,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | level | balance on/off | sensors | help");
+    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help");
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2573,6 +2573,7 @@ void handleCommand(String input) {
   } else if (input == "drive_stop") {
     stopWheels();
     squareState = SQUARE_IDLE; // also cancels an in-progress square-up
+    turnTestActive = false; // also cancels an in-progress turn test
     Serial.println("Wheels stopped.");
 
   } else if (input == "square") {
@@ -2580,6 +2581,21 @@ void handleCommand(String input) {
       Serial.println("Squaring up (turning until ToF1/ToF2 agree)...");
     } else {
       Serial.println("Cannot start square-up (already running, a drive is active, or ToF1/ToF2 reading is invalid).");
+    }
+
+  } else if (input.startsWith("turn_test ")) {
+    String rest = input.substring(10);
+    int    sep  = rest.indexOf(' ');
+    if (sep > 0) {
+      int speed = rest.substring(0, sep).toInt();
+      unsigned long durationMs = (unsigned long)rest.substring(sep + 1).toInt();
+      if (startTurnTest(speed, durationMs)) {
+        Serial.println("Turn test running -- mark position/heading before AND after, then measure by hand.");
+      } else {
+        Serial.println("Cannot start turn test (a drive, square-up, or another turn test is already active).");
+      }
+    } else {
+      Serial.println("Usage: turn_test <speed -255..255> <duration_ms>");
     }
 
   } else if (input.startsWith("all ")) {
@@ -2827,6 +2843,38 @@ void applySquareTurn(float adjustedDiff) {
   setWheelSpeedsLR(SQUARE_TURN_SPEED * sign, -SQUARE_TURN_SPEED * sign);
 }
 
+// ============================================================
+// TURN TEST: fires exactly ONE differential-drive pulse, then stops --
+// no ToF involved at all. Exists to answer a question the square-up
+// data alone couldn't: is a turn pulse actually rotating the robot in
+// place, or also translating it (sliding forward/back/sideways)? Mark
+// the floor before and after (tape at the wheelbase corners, or
+// against a wall) and measure by hand -- if there's real sideways/
+// forward drift on top of the rotation, that explains square-up not
+// converging cleanly (both ToF readings climbing together instead of
+// just their difference changing), and no amount of ToF-side tuning
+// fixes a chassis that isn't doing a clean pivot turn.
+// ============================================================
+bool turnTestActive = false;
+unsigned long turnTestStopAtMs = 0;
+
+bool startTurnTest(int speed, unsigned long durationMs) {
+  if (squareState != SQUARE_IDLE || driveActive || turnTestActive) return false;
+  setWheelSpeedsLR(speed, -speed);
+  turnTestActive = true;
+  turnTestStopAtMs = millis() + durationMs;
+  return true;
+}
+
+void updateTurnTest() {
+  if (!turnTestActive) return;
+  if ((long)(millis() - turnTestStopAtMs) >= 0) {
+    setWheelSpeedsLR(0, 0);
+    turnTestActive = false;
+    Serial.println("Turn test complete -- measure the actual rotation/drift now.");
+  }
+}
+
 bool startSquareUp() {
   if (squareState != SQUARE_IDLE || driveActive) return false;
   if (!tof1_ok || !tof2_ok) {
@@ -2982,6 +3030,9 @@ void loop() {
 
   // Step any in-progress square-up (turn until ToF1/ToF2 agree) forward
   updateSquareUp();
+
+  // Auto-stop a single turn-test pulse once its duration elapses
+  updateTurnTest();
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

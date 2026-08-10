@@ -42,6 +42,7 @@ enum SquareState { SQUARE_IDLE, SQUARE_TURN_PULSE, SQUARE_SETTLE, SQUARE_VERIFY 
 SquareState   squareState = SQUARE_IDLE;
 int           squareAttempts = 0;
 unsigned long squareStateStartMs = 0;
+unsigned long squareCurrentPulseMs = 0; // set by applySquareTurn(), proportional to the error size -- see its comment
 
 // Same reason: handleCommand()'s drive_stop branch cancels an
 // in-progress turn test, but comes before the TURN TEST section
@@ -2815,6 +2816,16 @@ void updateDrive() {
 // Comparing raw tof1-tof2 against 0 was targeting the wrong angle by
 // this whole offset, which is exactly why 'square' was overshooting.
 // All comparisons below now target this offset instead of 0.
+//
+// Re-confirmed a THIRD time against the actual step (squared up with
+// a box held flat against both hips, 25 samples): ToF1 ~246.9mm, ToF2
+// ~267.8mm -> offset ~-21mm, matching the wall/corner calibration
+// above within noise. This offset is a property of the two sensors
+// themselves, not the target surface -- ruling out "wrong offset for
+// this surface" as the cause of 'square' turning away from the step
+// even when already looking straight at it. The real cause was the
+// fixed-size turn pulse overcorrecting marginal errors -- see
+// SQUARE_TURN_MS_PER_MM below.
 #define SQUARE_DIFF_OFFSET_MM -22.0
 // Individual sensor noise measured from that same 18-sample burst:
 // ToF1 std dev ~2.9mm, ToF2 ~2.3mm. Since diff = tof1-tof2 combines
@@ -2824,12 +2835,22 @@ void updateDrive() {
 // shrinks that noise by roughly sqrt(N) before comparing.
 #define SQUARE_TOLERANCE_MM  3.0
 #define SQUARE_TURN_SPEED    150
-// Raised 150->400: confirmed on hardware the original pulse was too
-// short to produce a visible/meaningful turn per step (also confounded
-// by a wire that had fallen out of one motor driver at the time,
-// making earlier runs unreliable regardless). Retune from here based
-// on what an actual pulse now moves the robot by.
+// SQUARE_TURN_PULSE_MS is now a CEILING, not a fixed size every pulse
+// -- see applySquareTurn()/SQUARE_TURN_MS_PER_MM below. Was raised
+// 150->400 as a fixed value first (confirmed on hardware the original
+// pulse was too short to produce a visible/meaningful turn per step,
+// also confounded by a wire that had fallen out of one motor driver
+// at the time). Kept as the cap for genuinely large errors.
 #define SQUARE_TURN_PULSE_MS 400
+// Confirmed on hardware: a fixed-size pulse for EVERY correction,
+// however small the error, massively overcorrects a marginal/noise-
+// driven trigger (a reading just past SQUARE_TOLERANCE_MM by only a
+// couple mm) -- this was turning the robot AWAY from true square even
+// when it was already looking directly at the step, because the same
+// full 400ms/150-speed pulse fired regardless of whether the error was
+// 4mm or 40mm. Pulse duration now scales with the error itself.
+#define SQUARE_TURN_MS_PER_MM   15
+#define SQUARE_TURN_PULSE_MIN_MS 60 // floor -- shorter than this may not move the robot at all
 #define SQUARE_SETTLE_MS     300
 #define SQUARE_MAX_ATTEMPTS  20
 
@@ -2844,9 +2865,17 @@ void updateDrive() {
 // was moving the robot randomly, since comparing two noisy consecutive
 // readings to infer "did it get better" is itself noise-prone when
 // the signal is this small (see SQUARE_TOLERANCE_MM's comment).
+//
+// Also sets squareCurrentPulseMs proportional to the error size
+// (SQUARE_TURN_MS_PER_MM per mm, clamped to
+// [SQUARE_TURN_PULSE_MIN_MS, SQUARE_TURN_PULSE_MS]) -- see this
+// function's header comment above for why a fixed pulse regardless of
+// error size was the actual bug behind overshooting past true square.
 void applySquareTurn(float adjustedDiff) {
   int sign = (adjustedDiff < 0) ? -1 : 1;
   setWheelSpeedsLR(SQUARE_TURN_SPEED * sign, -SQUARE_TURN_SPEED * sign);
+  unsigned long pulseMs = (unsigned long)(fabs(adjustedDiff) * SQUARE_TURN_MS_PER_MM);
+  squareCurrentPulseMs = constrain(pulseMs, SQUARE_TURN_PULSE_MIN_MS, SQUARE_TURN_PULSE_MS);
 }
 
 // ============================================================
@@ -2900,7 +2929,7 @@ void updateSquareUp() {
   if (squareState == SQUARE_IDLE) return;
 
   if (squareState == SQUARE_TURN_PULSE) {
-    if (millis() - squareStateStartMs < SQUARE_TURN_PULSE_MS) return;
+    if (millis() - squareStateStartMs < squareCurrentPulseMs) return;
     setWheelSpeedsLR(0, 0);
     squareStateStartMs = millis();
     squareState = SQUARE_SETTLE;

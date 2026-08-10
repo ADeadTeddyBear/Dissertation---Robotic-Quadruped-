@@ -200,6 +200,44 @@ bool tof2Active = false;
 uint16_t tof1_mm = 0, tof2_mm = 0;
 bool     tof1_ok = false, tof2_ok = false;
 
+// Small rolling-average filter for both ToF sensors -- confirmed on
+// hardware that a single instantaneous reading carries several mm of
+// noise (each sensor's own std dev ~2-3mm, see square-up's comment),
+// enough to matter for anything comparing two readings against a
+// tight tolerance. Pushed every pollTofSensors() call so it's already
+// warm by the time anything needs it; only pushes when BOTH readings
+// are currently valid, keeping the two buffers in sync sample-for-
+// sample. Currently used by square-up only -- other systems (the step
+// scan, drive_to) still read tof1_mm/tof2_mm directly and are
+// unaffected.
+#define TOF_FILTER_N 5
+uint16_t tof1FilterBuf[TOF_FILTER_N] = {0};
+uint16_t tof2FilterBuf[TOF_FILTER_N] = {0};
+int      tofFilterIdx = 0;
+int      tofFilterCount = 0;
+
+void pushTofFilterSample() {
+  if (!tof1_ok || !tof2_ok) return;
+  tof1FilterBuf[tofFilterIdx] = tof1_mm;
+  tof2FilterBuf[tofFilterIdx] = tof2_mm;
+  tofFilterIdx = (tofFilterIdx + 1) % TOF_FILTER_N;
+  if (tofFilterCount < TOF_FILTER_N) tofFilterCount++;
+}
+
+float tof1Filtered() {
+  if (tofFilterCount == 0) return (float)tof1_mm;
+  long sum = 0;
+  for (int i = 0; i < tofFilterCount; i++) sum += tof1FilterBuf[i];
+  return (float)sum / tofFilterCount;
+}
+
+float tof2Filtered() {
+  if (tofFilterCount == 0) return (float)tof2_mm;
+  long sum = 0;
+  for (int i = 0; i < tofFilterCount; i++) sum += tof2FilterBuf[i];
+  return (float)sum / tofFilterCount;
+}
+
 #define FIRMWARE_BUILD "QuadSensors build 2026-07-25-l (VL53L0X)"
 
 // ============================================================
@@ -2228,6 +2266,7 @@ void pollTofSensors() {
     tof2_mm = tof2.readRangeContinuousMillimeters();
     tof2_ok = !tof2.timeoutOccurred() && tof2_mm > 0 && tof2_mm <= TOF_MAX_MM;
   }
+  pushTofFilterSample();
 }
 
 // ============================================================
@@ -2692,6 +2731,23 @@ void updateDrive() {
 // well below the smallest signal worth reacting to; if this turns out
 // tighter than the sensors' actual noise floor (causing it to never
 // settle/oscillate), loosen it back up based on what's actually seen.
+// The two ToF sensors do NOT read the same distance even at true
+// square -- confirmed by hand with the robot squared up by an
+// independent method (tape measure to symmetric points, not the
+// sensors themselves), then sampled 18 times in place: ToF1 averaged
+// ~293.8mm, ToF2 ~315.9mm -> offset ~-22mm. (A single first sample,
+// 297/312, gave -15mm -- noisy enough on its own to be off by 7mm;
+// see TOF_FILTER_N below for why this needed averaging at all.)
+// Comparing raw tof1-tof2 against 0 was targeting the wrong angle by
+// this whole offset, which is exactly why 'square' was overshooting.
+// All comparisons below now target this offset instead of 0.
+#define SQUARE_DIFF_OFFSET_MM -22.0
+// Individual sensor noise measured from that same 18-sample burst:
+// ToF1 std dev ~2.9mm, ToF2 ~2.3mm. Since diff = tof1-tof2 combines
+// both, its noise is larger still (~4mm) -- bigger than the 3mm
+// tolerance below, using single instantaneous readings. Averaging
+// TOF_FILTER_N samples first (see tof1Filtered()/tof2Filtered())
+// shrinks that noise by roughly sqrt(N) before comparing.
 #define SQUARE_TOLERANCE_MM  3.0
 #define SQUARE_TURN_SPEED    150
 // Raised 150->400: confirmed on hardware the original pulse was too
@@ -2703,17 +2759,19 @@ void updateDrive() {
 #define SQUARE_SETTLE_MS     300
 #define SQUARE_MAX_ATTEMPTS  20
 
-// diff = tof1 - tof2. Confirmed by hand which way this should turn:
-// ToF1 reading LOWER than ToF2 (diff<0) -> reverse the left wheels,
-// forward the right wheels. Opposite when ToF1 reads higher. Computed
-// fresh from the CURRENT diff every pulse, not guessed once and
-// corrected from a noisy better/worse comparison -- that self-
-// correcting version was confirmed on hardware to look like it was
-// moving the robot randomly, since comparing two noisy consecutive
+// Takes adjustedDiff = (tof1 - tof2) - SQUARE_DIFF_OFFSET_MM, i.e.
+// already corrected for the two sensors' real offset at true square --
+// so adjustedDiff==0 means square, not raw tof1==tof2. Confirmed by
+// hand which way this should turn: adjustedDiff<0 -> reverse the left
+// wheels, forward the right wheels. Opposite when adjustedDiff>0.
+// Computed fresh from the CURRENT reading every pulse, not guessed
+// once and corrected from a noisy better/worse comparison -- that
+// self-correcting version was confirmed on hardware to look like it
+// was moving the robot randomly, since comparing two noisy consecutive
 // readings to infer "did it get better" is itself noise-prone when
 // the signal is this small (see SQUARE_TOLERANCE_MM's comment).
-void applySquareTurn(float diff) {
-  int sign = (diff < 0) ? -1 : 1;
+void applySquareTurn(float adjustedDiff) {
+  int sign = (adjustedDiff < 0) ? -1 : 1;
   setWheelSpeedsLR(SQUARE_TURN_SPEED * sign, -SQUARE_TURN_SPEED * sign);
 }
 
@@ -2723,13 +2781,13 @@ bool startSquareUp() {
     Serial.println("Cannot square: ToF1/ToF2 reading invalid.");
     return false;
   }
-  float diff = (float)tof1_mm - (float)tof2_mm;
-  if (fabs(diff) <= SQUARE_TOLERANCE_MM) {
+  float adjustedDiff = tof1Filtered() - tof2Filtered() - SQUARE_DIFF_OFFSET_MM;
+  if (fabs(adjustedDiff) <= SQUARE_TOLERANCE_MM) {
     Serial.println("Already square (within tolerance).");
     return true;
   }
   squareAttempts = 0;
-  applySquareTurn(diff);
+  applySquareTurn(adjustedDiff);
   squareStateStartMs = millis();
   squareState = SQUARE_TURN_PULSE;
   return true;
@@ -2758,12 +2816,14 @@ void updateSquareUp() {
     squareState = SQUARE_IDLE;
     return;
   }
-  float diff = (float)tof1_mm - (float)tof2_mm;
+  float adjustedDiff = tof1Filtered() - tof2Filtered() - SQUARE_DIFF_OFFSET_MM;
   Serial.print("Square check: ToF1="); Serial.print(tof1_mm);
   Serial.print(" ToF2="); Serial.print(tof2_mm);
-  Serial.print(" diff="); Serial.println(diff, 0);
+  Serial.print(" (filtered "); Serial.print(tof1Filtered(), 0);
+  Serial.print("/"); Serial.print(tof2Filtered(), 0);
+  Serial.print(") adjustedDiff="); Serial.println(adjustedDiff, 0);
 
-  if (fabs(diff) <= SQUARE_TOLERANCE_MM) {
+  if (fabs(adjustedDiff) <= SQUARE_TOLERANCE_MM) {
     Serial.println("Square: aligned.");
     squareState = SQUARE_IDLE;
     return;
@@ -2776,7 +2836,7 @@ void updateSquareUp() {
     return;
   }
 
-  applySquareTurn(diff);
+  applySquareTurn(adjustedDiff);
   squareStateStartMs = millis();
   squareState = SQUARE_TURN_PULSE;
 }

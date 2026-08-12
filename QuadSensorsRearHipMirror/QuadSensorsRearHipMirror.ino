@@ -2236,7 +2236,7 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_TUCK) {
     if (!legMoveDone(liftLegIdx)) return; // hip still lifting
-    if (liftIsStepPlace) {
+    if (liftIsStepPlace && !liftIsSecondLeg) {
       // Always close the gap to a deliberately-chosen, near-max-reach
       // target on the wheels first, rather than only driving when the
       // raw scanned distance happens to be out of reach. Two reasons:
@@ -2247,6 +2247,16 @@ void updateLiftSequence() {
       // reach trade off directly against each other in the 2-link IK.
       // A straighter FL leg leaves more real clearance around/under
       // the body for FR's own lift/tuck/reach later (see second_fr).
+      //
+      // liftIsSecondLeg is excluded here on purpose -- confirmed on
+      // hardware that letting THIS branch run for the second leg tries
+      // to drive all four wheels again to "close the gap", except the
+      // first leg's wheel is already resting on the step by then, not
+      // the ground -- driving it along with the other three (on a
+      // different surface/height) made the chassis lurch/slide
+      // unpredictably. The second leg reuses liftStepForwardMM as-is
+      // (see startSecondLegOntoStep()) and skips straight to the
+      // traverse below, no wheel movement at all.
       //
       // maxReach^2 = x^2 + y^2 is the leg's absolute reach ceiling, but
       // x is fixed through BOTH the elevated traverse (at computeClearY())
@@ -2276,6 +2286,11 @@ void updateLiftSequence() {
       Serial.println(F("mm so the reach overshoots the step's edge, not just touches it."));
       startDriveToTof(LIFT_APPROACH_SPEED, driveStopMM - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
       liftState = LIFT_APPROACH;
+    } else if (liftIsStepPlace) {
+      // Second leg: no wheel movement, no retargeting -- liftStepForwardMM
+      // is already correct (see startSecondLegOntoStep()'s comment, FL/FR
+      // share the same forward distance), so go straight to the reach.
+      startTraverseToStep();
     } else {
       Serial.println(F("Leg lifted (tucked)."));
       liftState = LIFT_HOLDING;

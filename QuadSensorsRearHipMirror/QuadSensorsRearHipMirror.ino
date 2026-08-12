@@ -1378,10 +1378,16 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // reaching up to it. Confirmed on hardware this was the real problem:
 // the wheel got there, barely touched the edge, and slipped off under
 // its own weight-shift mid-descend -- the resulting sudden roll (~21
-// degrees) tripped the tilt-abort net. Sized loosely against the
-// wheel's own ~45mm radius -- want the whole contact patch past the
-// edge, not just its leading point. UNTESTED at this exact value.
-#define STEP_LANDING_DEPTH_MM 40.0
+// degrees) tripped the tilt-abort net.
+//
+// Raised 40->70: confirmed on hardware that 40 (about one wheel
+// radius) got the CONTACT POINT past the edge but not the wheel's
+// axle/center -- it landed right at the front corner, not solidly on
+// the flat surface. 70 is deliberately more than a full wheel
+// diameter (~90mm) short of that, so the axle itself ends up
+// meaningfully past the edge, not just the wheel's leading point.
+// UNTESTED at this exact value.
+#define STEP_LANDING_DEPTH_MM 70.0
 
 // The final descent onto the step used to be one commanded move
 // straight to the nominal target Y (lastCommandedHeight -

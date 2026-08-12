@@ -1365,24 +1365,23 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LEG_LIFT_MM 30.0        // conservative -- thighs should not fully lift yet
 #define STEP_CLEAR_MARGIN_MM 20.0 // extra clearance above the step's own top surface during the horizontal traverse
 
-// Was 30.0 -- an attempt to fix a "caught the edge, landed a couple cm
-// short" report by targeting past the step's front face instead of
-// right at it. Reverted to 0 after it made things WORSE, not better:
-// confirmed by the user that the plain reach (this constant at 0, no
-// LIFT_REVERSE/LIFT_APPROACH wheel involvement at all) placed the foot
-// correctly before this session's wheel-driven maneuvers existed. The
-// inset didn't just add 30mm to the final target -- it also forced
-// LIFT_APPROACH's own drive target 30mm more conservative (to leave
-// room for the inset afterward), so every reach that actually needs
-// the approach-drive now carries an extra ~30mm of real-world wheel-
-// stopping imprecision (no encoders, closed-loop against a somewhat
-// noisy ToF reading, real coast after motor cutoff) that a servo-only
-// reach never had. Net result on hardware: a foot that used to at
-// least land ON the step (just close to the edge) missed it entirely,
-// resting on the floor instead. Left as a named, zeroed constant
-// rather than deleted -- worth revisiting only once LIFT_APPROACH's
-// own stopping accuracy is independently verified, not before.
-#define STEP_LANDING_DEPTH_MM 0.0
+// How far PAST the step's measured edge the wheel needs to land to be
+// firmly planted, not just barely touching. Was tried once before as
+// an amount ADDED to the reach target after driving -- reverted after
+// that made the approach-drive stop further away to "leave room" for
+// the addition, which just moved the imprecision around rather than
+// fixing anything. This time it's subtracted from the APPROACH-DRIVE's
+// stopping point instead (see LIFT_TUCK): the wheels drive this much
+// CLOSER than bare minimum reach requires, so that reaching to the
+// leg's fixed near-max target (LIFT_APPROACH_REACH_MARGIN_MM below)
+// overshoots the step's real edge by this amount, instead of just
+// reaching up to it. Confirmed on hardware this was the real problem:
+// the wheel got there, barely touched the edge, and slipped off under
+// its own weight-shift mid-descend -- the resulting sudden roll (~21
+// degrees) tripped the tilt-abort net. Sized loosely against the
+// wheel's own ~45mm radius -- want the whole contact patch past the
+// edge, not just its leading point. UNTESTED at this exact value.
+#define STEP_LANDING_DEPTH_MM 40.0
 
 // The final descent onto the step used to be one commanded move
 // straight to the nominal target Y (lastCommandedHeight -
@@ -2262,9 +2261,20 @@ void updateLiftSequence() {
       float yLimiting = (fabs(yFinal) > fabs(yClear)) ? yFinal : yClear;
       float targetForwardMM = sqrt(max(0.0f, maxReach * maxReach - yLimiting * yLimiting))
                                - LIFT_APPROACH_REACH_MARGIN_MM;
+      // Fixed now, before the drive even starts -- NOT re-derived from
+      // a post-drive remeasure in LIFT_APPROACH. See STEP_LANDING_DEPTH_MM:
+      // the drive deliberately stops CLOSER than this reach needs, so
+      // reaching all the way out to this fixed target is what creates
+      // the overshoot past the step's real edge. Remeasuring afterward
+      // and using that raw distance instead would cancel the depth
+      // back out.
+      liftStepForwardMM = targetForwardMM;
+      float driveStopMM = targetForwardMM - STEP_LANDING_DEPTH_MM;
       Serial.print(F("Targeting ")); Serial.print(targetForwardMM, 0);
-      Serial.println(F("mm forward (near-max reach, minimal knee bend) -- closing the gap on the wheels."));
-      startDriveToTof(LIFT_APPROACH_SPEED, targetForwardMM - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
+      Serial.print(F("mm forward (near-max reach) -- closing the gap on the wheels to "));
+      Serial.print(driveStopMM, 0);
+      Serial.println(F("mm so the reach overshoots the step's edge, not just touches it."));
+      startDriveToTof(LIFT_APPROACH_SPEED, driveStopMM - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
       liftState = LIFT_APPROACH;
     } else {
       Serial.println(F("Leg lifted (tucked)."));
@@ -2273,22 +2283,19 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_APPROACH) {
     if (driveActive) return; // still closing the gap (or timed out -- either way driveActive clears on its own)
-    // Live re-measure rather than arithmetic against the pre-approach
-    // estimate -- same reasoning as LIFT_REMEASURE_DOWN: a fresh ToF1
-    // reading is more trustworthy than compounding estimates, and
-    // ToF1 has a clear view here (still approaching the step's face,
-    // same condition the scan/remeasure both rely on).
+    // liftStepForwardMM was already fixed to the near-max reach target
+    // back in LIFT_TUCK, deliberately NOT re-derived from a fresh ToF
+    // reading here -- see STEP_LANDING_DEPTH_MM's comment. Overwriting
+    // it with wherever the drive actually stopped would cancel that
+    // depth back out, landing right back at the edge. This poll is
+    // diagnostic only, to see how close the drive actually got.
     pollTofSensors();
     if (tof1_ok) {
-      // STEP_LANDING_DEPTH_MM is 0 for now (see its own comment) --
-      // kept here rather than dropped so a future depth adjustment has
-      // one obvious place to go back into.
-      float approachedForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
-      Serial.print(F("Approach complete: ")); Serial.print(approachedForwardMM, 0);
-      Serial.println(F("mm forward now."));
-      liftStepForwardMM = approachedForwardMM + STEP_LANDING_DEPTH_MM;
+      Serial.print(F("Approach complete: ")); Serial.print((float)tof1_mm + TOF1_FORWARD_OFFSET_MM, 0);
+      Serial.print(F("mm forward now (drive target was ")); Serial.print(liftStepForwardMM - STEP_LANDING_DEPTH_MM, 0);
+      Serial.println(F("mm)."));
     } else {
-      Serial.println(F("Approach: ToF1 reading invalid, keeping the pre-approach distance estimate."));
+      Serial.println(F("Approach: ToF1 reading invalid -- proceeding on the fixed target anyway."));
     }
     startTraverseToStep();
 

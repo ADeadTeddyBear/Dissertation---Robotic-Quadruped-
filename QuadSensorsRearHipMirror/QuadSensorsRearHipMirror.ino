@@ -720,7 +720,7 @@ const int CROUCH_LOW_KNEE[NUM_HIPS] = {  30,  20, 240, 250 }; // FL, FR, RL, RR 
 // something to sanity-check by eye/tape measure, not trust blindly.
 // ------------------------------------------------------------
 #define TOF1_HEIGHT_ABOVE_HIP_MM 5.0 // measured: "a few mm" above the hip-pivot line
-#define TOF1_FORWARD_OFFSET_MM   -60.0 // measured: 60mm BEHIND the front hip pivots (corrected from an earlier "~3mm forward" estimate)
+#define TOF1_FORWARD_OFFSET_MM   -58.0 // measured with calipers: 58mm BEHIND the front hip pivots (corrected from an earlier "~3mm forward" estimate, then a hand-measured "~60mm")
 #define TOF1_HEIGHT_REF_LEG      FL  // any leg works (all move identically during the sweep); front leg chosen since ToF1 sits at the front
 
 // Real hip-to-ground height (mm) leg i would have at a given
@@ -1365,19 +1365,24 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LEG_LIFT_MM 30.0        // conservative -- thighs should not fully lift yet
 #define STEP_CLEAR_MARGIN_MM 20.0 // extra clearance above the step's own top surface during the horizontal traverse
 
-// liftStepForwardMM (from ToF1) is the distance to the step's FRONT
-// FACE -- targeting that directly lands the foot right at the leading
-// edge/lip, not solidly on the step's top surface. Confirmed on
-// hardware: the foot caught the edge (tripping LIFT_DESCEND's contact-
-// via-tilt early stop) instead of clearing it and landing further in.
-// Added to liftStepForwardMM at every live (re)measurement -- see
-// LIFT_REMEASURE_DOWN/LIFT_APPROACH -- so the traverse, the
-// footReachable() check, and the approach-drive's target all agree on
-// the same "onto the step" target, not the bare face distance.
-//
-// UNTESTED ON HARDWARE at this exact value: a starting guess sized to
-// the "a couple cm" shortfall reported, not measured precisely.
-#define STEP_LANDING_DEPTH_MM 30.0
+// Was 30.0 -- an attempt to fix a "caught the edge, landed a couple cm
+// short" report by targeting past the step's front face instead of
+// right at it. Reverted to 0 after it made things WORSE, not better:
+// confirmed by the user that the plain reach (this constant at 0, no
+// LIFT_REVERSE/LIFT_APPROACH wheel involvement at all) placed the foot
+// correctly before this session's wheel-driven maneuvers existed. The
+// inset didn't just add 30mm to the final target -- it also forced
+// LIFT_APPROACH's own drive target 30mm more conservative (to leave
+// room for the inset afterward), so every reach that actually needs
+// the approach-drive now carries an extra ~30mm of real-world wheel-
+// stopping imprecision (no encoders, closed-loop against a somewhat
+// noisy ToF reading, real coast after motor cutoff) that a servo-only
+// reach never had. Net result on hardware: a foot that used to at
+// least land ON the step (just close to the edge) missed it entirely,
+// resting on the floor instead. Left as a named, zeroed constant
+// rather than deleted -- worth revisiting only once LIFT_APPROACH's
+// own stopping accuracy is independently verified, not before.
+#define STEP_LANDING_DEPTH_MM 0.0
 
 // The final descent onto the step used to be one commanded move
 // straight to the nominal target Y (lastCommandedHeight -

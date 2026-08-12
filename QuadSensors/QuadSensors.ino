@@ -2166,9 +2166,19 @@ void updateLiftSequence() {
         // aborting outright: the leg stays exactly where the hip-lift
         // above left it (tucked up, extended forward) for the whole
         // drive.
+        // maxForwardAtY is a raw-ToF1 target (no STEP_LANDING_DEPTH_MM
+        // yet) -- LIFT_APPROACH adds that inset back on AFTER the drive
+        // stops, so it has to be subtracted here too, or the post-drive
+        // target ends up STEP_LANDING_DEPTH_MM past the true max reach
+        // and the traverse aborts as unreachable even after a perfect
+        // drive. Confirmed on hardware: drove to the printed target,
+        // remeasured, added the 30mm inset on top, and the resulting
+        // 368mm request exceeded the leg's real ~358mm max reach at
+        // this Y by exactly the gap the missing subtraction left open.
         float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
         float y = computeClearY();
-        float maxForwardAtY = sqrt(max(0.0f, maxReach * maxReach - y * y)) - LIFT_APPROACH_REACH_MARGIN_MM;
+        float maxForwardAtY = sqrt(max(0.0f, maxReach * maxReach - y * y))
+                               - LIFT_APPROACH_REACH_MARGIN_MM - STEP_LANDING_DEPTH_MM;
         Serial.print(F("Out of reach at ")); Serial.print(liftStepForwardMM, 0);
         Serial.print(F("mm -- approaching to ~")); Serial.print(maxForwardAtY, 0);
         Serial.println(F("mm on the wheels first."));
@@ -2190,7 +2200,10 @@ void updateLiftSequence() {
     pollTofSensors();
     if (tof1_ok) {
       // + STEP_LANDING_DEPTH_MM: same reasoning as LIFT_REMEASURE_DOWN.
-      liftStepForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM + STEP_LANDING_DEPTH_MM;
+      float approachedForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
+      Serial.print(F("Approach complete: ")); Serial.print(approachedForwardMM, 0);
+      Serial.println(F("mm forward now (raw ToF1, before the landing-depth inset)."));
+      liftStepForwardMM = approachedForwardMM + STEP_LANDING_DEPTH_MM;
     } else {
       Serial.println(F("Approach: ToF1 reading invalid, keeping the pre-approach distance estimate."));
     }

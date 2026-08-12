@@ -1408,16 +1408,16 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_REVERSE_SPEED        -150
 #define LIFT_REVERSE_TIMEOUT_MS   8000
 
-// LIFT_REVERSE's clearance can push liftStepForwardMM out past this
-// leg's own max reach (thigh+calf) -- confirmed on hardware: 353mm
-// measured + 150mm clearance = 503mm requested, well past the 360mm
-// physical ceiling, aborting the reach as unreachable. Rather than
-// abort, LIFT_TUCK checks footReachable() first and, if it's not, closes
-// the gap back in on the wheels (LIFT_APPROACH) until the remaining
-// distance is back under the ceiling with this margin -- the leg itself
-// stays exactly where the hip-lift left it (tucked up, extended
-// forward) for the whole drive, which is also the shape a second front
-// leg will later need clearance around (see second_fr).
+// LIFT_TUCK always closes the gap to (leg's max reach - this margin)
+// on the wheels before reaching, rather than only when
+// LIFT_REVERSE's clearance happens to push liftStepForwardMM out of
+// range (confirmed on hardware doing exactly that: 353mm measured +
+// 150mm clearance = 503mm requested, past the 360mm physical ceiling).
+// This margin is now the direct "how much bend is left in the final
+// knee angle" knob -- smaller margin = closer to full extension = less
+// bend = more clearance for the SECOND front leg's own lift/tuck/reach
+// later (see second_fr). The leg itself stays exactly where the
+// hip-lift left it (tucked up, extended forward) for the whole drive.
 #define LIFT_APPROACH_REACH_MARGIN_MM 20.0
 #define LIFT_APPROACH_SPEED           150
 #define LIFT_APPROACH_TIMEOUT_MS      8000
@@ -2162,34 +2162,34 @@ void updateLiftSequence() {
   } else if (liftState == LIFT_TUCK) {
     if (!legMoveDone(liftLegIdx)) return; // hip still lifting
     if (liftIsStepPlace) {
-      if (footReachable(liftStepForwardMM, computeClearY())) {
-        startTraverseToStep();
-      } else {
-        // LIFT_REVERSE's clearance can push liftStepForwardMM out past
-        // this leg's own reach -- see LIFT_APPROACH_REACH_MARGIN_MM's
-        // comment above. Close the gap on the wheels instead of
-        // aborting outright: the leg stays exactly where the hip-lift
-        // above left it (tucked up, extended forward) for the whole
-        // drive.
-        // maxForwardAtY is a raw-ToF1 target (no STEP_LANDING_DEPTH_MM
-        // yet) -- LIFT_APPROACH adds that inset back on AFTER the drive
-        // stops, so it has to be subtracted here too, or the post-drive
-        // target ends up STEP_LANDING_DEPTH_MM past the true max reach
-        // and the traverse aborts as unreachable even after a perfect
-        // drive. Confirmed on hardware: drove to the printed target,
-        // remeasured, added the 30mm inset on top, and the resulting
-        // 368mm request exceeded the leg's real ~358mm max reach at
-        // this Y by exactly the gap the missing subtraction left open.
-        float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
-        float y = computeClearY();
-        float maxForwardAtY = sqrt(max(0.0f, maxReach * maxReach - y * y))
-                               - LIFT_APPROACH_REACH_MARGIN_MM - STEP_LANDING_DEPTH_MM;
-        Serial.print(F("Out of reach at ")); Serial.print(liftStepForwardMM, 0);
-        Serial.print(F("mm -- approaching to ~")); Serial.print(maxForwardAtY, 0);
-        Serial.println(F("mm on the wheels first."));
-        startDriveToTof(LIFT_APPROACH_SPEED, maxForwardAtY - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
-        liftState = LIFT_APPROACH;
-      }
+      // Always close the gap to a deliberately-chosen, near-max-reach
+      // target on the wheels first, rather than only driving when the
+      // raw scanned distance happens to be out of reach. Two reasons:
+      // (1) predictable, repeatable placement instead of "however far
+      // the scan happened to measure", and (2) reaching close to full
+      // extension for a given height means a close-to-straight knee --
+      // this IS the "reduce the bend" request, since bend and leftover
+      // reach trade off directly against each other in the 2-link IK.
+      // A straighter FL leg leaves more real clearance around/under
+      // the body for FR's own lift/tuck/reach later (see second_fr).
+      //
+      // maxReach^2 = x^2 + y^2 is the leg's absolute reach ceiling, but
+      // x is fixed through BOTH the elevated traverse (at computeClearY())
+      // AND the final descend (at the step's own height) -- only y
+      // changes between them. Sized against whichever of those two y's
+      // has the larger magnitude (the more constraining one), so the
+      // chosen x is safely reachable at both, not just the shallower
+      // traverse height.
+      float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
+      float yClear = computeClearY();
+      float yFinal = lastCommandedHeight - liftStepHeightMM;
+      float yLimiting = (fabs(yFinal) > fabs(yClear)) ? yFinal : yClear;
+      float targetForwardMM = sqrt(max(0.0f, maxReach * maxReach - yLimiting * yLimiting))
+                               - LIFT_APPROACH_REACH_MARGIN_MM;
+      Serial.print(F("Targeting ")); Serial.print(targetForwardMM, 0);
+      Serial.println(F("mm forward (near-max reach, minimal knee bend) -- closing the gap on the wheels."));
+      startDriveToTof(LIFT_APPROACH_SPEED, targetForwardMM - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
+      liftState = LIFT_APPROACH;
     } else {
       Serial.println(F("Leg lifted (tucked)."));
       liftState = LIFT_HOLDING;
@@ -2204,10 +2204,12 @@ void updateLiftSequence() {
     // same condition the scan/remeasure both rely on).
     pollTofSensors();
     if (tof1_ok) {
-      // + STEP_LANDING_DEPTH_MM: same reasoning as LIFT_REMEASURE_DOWN.
+      // STEP_LANDING_DEPTH_MM is 0 for now (see its own comment) --
+      // kept here rather than dropped so a future depth adjustment has
+      // one obvious place to go back into.
       float approachedForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
       Serial.print(F("Approach complete: ")); Serial.print(approachedForwardMM, 0);
-      Serial.println(F("mm forward now (raw ToF1, before the landing-depth inset)."));
+      Serial.println(F("mm forward now."));
       liftStepForwardMM = approachedForwardMM + STEP_LANDING_DEPTH_MM;
     } else {
       Serial.println(F("Approach: ToF1 reading invalid, keeping the pre-approach distance estimate."));

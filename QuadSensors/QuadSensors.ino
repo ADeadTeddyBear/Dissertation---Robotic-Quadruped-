@@ -1417,16 +1417,18 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // angle" knob -- smaller margin = closer to full extension = less bend
 // = further reach onto the step (a more solid placement) = more
 // clearance for the SECOND front leg's own lift/tuck/reach later (see
-// second_fr), all from the same trade-off. Lowered from 20 to 10 by
-// request (near-straight knee, not just "somewhat less bent") -- this
-// is real margin traded away, not free: right at the physical reach
-// ceiling the leg is in its most singular configuration, and every mm
-// given up here is a mm less slack against ToF noise/offset error and
-// the approach-drive's own real-world stopping imprecision (no
-// encoders) before setFoot() rejects the target as unreachable. Watch
-// for more frequent "unreachable" aborts than before; raise this back
-// toward 20 if so.
-#define LIFT_APPROACH_REACH_MARGIN_MM 10.0
+// second_fr), all from the same trade-off. Was 20, then 10; set to 0 by
+// explicit request -- fully straighten the knee, target the leg's
+// exact physical reach ceiling with no margin held back. At d ==
+// thigh+calf exactly, solveLegIK()'s law-of-cosines solve still
+// resolves cleanly (cosKnee = 1, knee angle = 0 = dead straight), so
+// this isn't a math failure case -- but it does mean zero slack left
+// for ToF noise, offset-calibration error, or the approach-drive's own
+// real-world stopping imprecision (no encoders) before a reach that
+// overshoots the ceiling by even a fraction of a mm gets rejected as
+// unreachable. If that starts happening, this is the first constant to
+// bring back up.
+#define LIFT_APPROACH_REACH_MARGIN_MM 0.0
 #define LIFT_APPROACH_SPEED           150
 #define LIFT_APPROACH_TIMEOUT_MS      8000
 

@@ -765,7 +765,7 @@ void updateStand() {
   lastStandStepMs = millis();
   if (!standStep()) {
     standMoveInProgress = false;
-    Serial.println("Stand target reached.");
+    Serial.println(F("Stand target reached."));
   }
 }
 
@@ -890,11 +890,11 @@ bool startStepScan() {
 // baseline crosses STEP_CHANGE_THRESHOLD_MM -- see scanBaselineToF1's
 // comment for why baseline (not the previous step) is what's compared.
 void printScanChange() {
-  Serial.print("ToF1 cleared lip at "); Serial.print((int)round(standProgress * 100)); Serial.print("%: baseline=");
-  if (scanBaselineToF1Ok) { Serial.print(scanBaselineToF1); Serial.print("mm"); } else { Serial.print("---"); }
-  Serial.print(" -> now=");
-  if (tof1_ok) { Serial.print(tof1_mm); Serial.print("mm"); } else { Serial.print("---"); }
-  Serial.print("  (possible step, cumulative delta >= "); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print("mm)");
+  Serial.print(F("ToF1 cleared lip at ")); Serial.print((int)round(standProgress * 100)); Serial.print(F("%: baseline="));
+  if (scanBaselineToF1Ok) { Serial.print(scanBaselineToF1); Serial.print(F("mm")); } else { Serial.print(F("---")); }
+  Serial.print(F(" -> now="));
+  if (tof1_ok) { Serial.print(tof1_mm); Serial.print(F("mm")); } else { Serial.print(F("---")); }
+  Serial.print(F("  (possible step, cumulative delta >= ")); Serial.print(STEP_CHANGE_THRESHOLD_MM); Serial.print(F("mm)"));
   Serial.println();
 
   // Use the scan's BASELINE (0%) for distance, not lastScanToF1 (the
@@ -911,9 +911,9 @@ void printScanChange() {
   if (scanBaselineToF1Ok) {
     float stepHeightMM  = heightAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM;
     float stepForwardMM = (float)scanBaselineToF1 + TOF1_FORWARD_OFFSET_MM;
-    Serial.print("  -> estimated step: height~"); Serial.print(stepHeightMM, 0);
-    Serial.print("mm at ~"); Serial.print(stepForwardMM, 0);
-    Serial.println("mm forward of the hip. UNVALIDATED estimate -- sanity-check before trusting step_scan_*.");
+    Serial.print(F("  -> estimated step: height~")); Serial.print(stepHeightMM, 0);
+    Serial.print(F("mm at ~")); Serial.print(stepForwardMM, 0);
+    Serial.println(F("mm forward of the hip. UNVALIDATED estimate -- sanity-check before trusting step_scan_*."));
 
     // Hard physical ceiling -- thigh+calf is the leg's absolute max
     // reach, full stop, regardless of body height. A forward
@@ -927,10 +927,10 @@ void printScanChange() {
     // box, not just a staircase -- means "last reading before the
     // threshold trips" isn't measuring a stable face distance at all).
     if (stepForwardMM > (LEG_THIGH_MM + LEG_CALF_MM) - 20.0) {
-      Serial.print("  -> REJECTED: ");
+      Serial.print(F("  -> REJECTED: "));
       Serial.print(stepForwardMM, 0);
-      Serial.print("mm exceeds this leg's max possible reach ("); Serial.print(LEG_THIGH_MM + LEG_CALF_MM, 0);
-      Serial.println("mm) -- not usable, not stored. Distance estimate is unreliable for this scan, not just this leg's workspace.");
+      Serial.print(F("mm exceeds this leg's max possible reach (")); Serial.print(LEG_THIGH_MM + LEG_CALF_MM, 0);
+      Serial.println(F("mm) -- not usable, not stored. Distance estimate is unreliable for this scan, not just this leg's workspace."));
     } else {
       lastDetectedStepForwardMM = stepForwardMM;
       lastDetectedStepHeightMM  = stepHeightMM;
@@ -995,11 +995,11 @@ void updateStepScan() {
         // stopped (see applyStandProgress()), so the reach/support-
         // polygon math is still correct regardless of the stance this
         // was triggered from.
-        Serial.println("Auto-attempting step placement...");
+        Serial.println(F("Auto-attempting step placement..."));
         if (startPlaceOnStep(AUTO_STEP_LEG, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
           autoStepState = AUTO_PLACING;
         } else {
-          Serial.println("Auto step placement could not start -- a lift/step sequence is already in progress (liftState != LIFT_IDLE). If the last attempt ended in a hold or a safety abort, send 'lower' first -- manually jogging hip_xx/knee_xx does NOT reset this.");
+          Serial.println(F("Auto step placement could not start -- a lift/step sequence is already in progress (liftState != LIFT_IDLE). If the last attempt ended in a hold or a safety abort, send 'lower' first -- manually jogging hip_xx/knee_xx does NOT reset this."));
         }
       }
       return;
@@ -1019,13 +1019,13 @@ void updateStepScan() {
   // as a "jump".
   int curPercent = (int)round(standProgress * 100);
   if (curPercent >= nextScanReportPercent) {
-    Serial.print(curPercent); Serial.print("%: ToF1=");
+    Serial.print(curPercent); Serial.print(F("%: ToF1="));
     if (tof1_ok) {
       Serial.print(tof1_mm);
       float shift = footXAtStandProgress(TOF1_HEIGHT_REF_LEG, 0.0) - footXAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress);
-      Serial.print("mm (self-motion compensated: "); Serial.print((float)tof1_mm + shift, 0); Serial.println("mm)");
+      Serial.print(F("mm (self-motion compensated: ")); Serial.print((float)tof1_mm + shift, 0); Serial.println(F("mm)"));
     } else {
-      Serial.println("---");
+      Serial.println(F("---"));
     }
     nextScanReportPercent += SCAN_REPORT_STEP_PERCENT;
   }
@@ -1033,9 +1033,9 @@ void updateStepScan() {
   if (standProgress >= 1.0) {
     scanState = SCAN_IDLE;
     if (!scanStepReported) {
-      Serial.println("Scan complete. No step/lip crossing found in this range.");
+      Serial.println(F("Scan complete. No step/lip crossing found in this range."));
     } else {
-      Serial.println("Scan complete.");
+      Serial.println(F("Scan complete."));
     }
     return;
   }
@@ -1312,6 +1312,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // ============================================================
 #define LEG_LIFT_MM 30.0        // conservative -- thighs should not fully lift yet
 #define STEP_CLEAR_MARGIN_MM 20.0 // extra clearance above the step's own top surface during the horizontal traverse
+
+// liftStepForwardMM (from ToF1) is the distance to the step's FRONT
+// FACE -- targeting that directly lands the foot right at the leading
+// edge/lip, not solidly on the step's top surface. Confirmed on
+// hardware: the foot caught the edge (tripping LIFT_DESCEND's contact-
+// via-tilt early stop) instead of clearing it and landing further in.
+// Added to liftStepForwardMM at every live (re)measurement -- see
+// LIFT_REMEASURE_DOWN/LIFT_APPROACH -- so the traverse, the
+// footReachable() check, and the approach-drive's target all agree on
+// the same "onto the step" target, not the bare face distance.
+//
+// UNTESTED ON HARDWARE at this exact value: a starting guess sized to
+// the "a couple cm" shortfall reported, not measured precisely.
+#define STEP_LANDING_DEPTH_MM 30.0
 
 // The final descent onto the step used to be one commanded move
 // straight to the nominal target Y (lastCommandedHeight -
@@ -1700,11 +1714,11 @@ bool checkLiftTiltSafety() {
   readMPU6050(pitch, roll);
   if (fabs(pitch) < LIFT_TILT_ABORT_DEG && fabs(roll) < LIFT_TILT_ABORT_DEG) return false;
 
-  Serial.print("LIFT SAFETY ABORT: body tilt pitch=");
+  Serial.print(F("LIFT SAFETY ABORT: body tilt pitch="));
   Serial.print(pitch, 1);
-  Serial.print(" roll=");
+  Serial.print(F(" roll="));
   Serial.print(roll, 1);
-  Serial.println(" exceeded the safety threshold -- freezing all legs where they are.");
+  Serial.println(F(" exceeded the safety threshold -- freezing all legs where they are."));
 
   freezeLeg(liftLegIdx);
   for (int k = 0; k < 3; k++) freezeLeg(liftStanceIdx[k]);
@@ -1778,11 +1792,11 @@ bool checkClimbTiltSafety() {
   readMPU6050(pitch, roll);
   if (fabs(pitch) < LIFT_TILT_ABORT_DEG && fabs(roll) < LIFT_TILT_ABORT_DEG) return false;
 
-  Serial.print("CLIMB SAFETY ABORT: body tilt pitch=");
+  Serial.print(F("CLIMB SAFETY ABORT: body tilt pitch="));
   Serial.print(pitch, 1);
-  Serial.print(" roll=");
+  Serial.print(F(" roll="));
   Serial.print(roll, 1);
-  Serial.println(" exceeded the safety threshold -- freezing all legs where they are.");
+  Serial.println(F(" exceeded the safety threshold -- freezing all legs where they are."));
 
   for (int i = 0; i < NUM_HIPS; i++) freezeLeg(i);
   climbMoveActive = false;
@@ -1803,7 +1817,7 @@ void updateClimbMoveTracking() {
 
   climbMoveActive = false;
   moveSpeedScale = 1.0;
-  Serial.println("Climb pose reached.");
+  Serial.println(F("Climb pose reached."));
 }
 
 // ============================================================
@@ -1872,7 +1886,7 @@ void startLiftSink() {
 void startTraverseToStep() {
   int forceBranch = (liftLegIdx == FL || liftLegIdx == FR) ? 0 : -1;
   if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY(), forceBranch)) {
-    Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
+    Serial.println(F("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace."));
     abortLiftSequence();
     return;
   }
@@ -1974,11 +1988,11 @@ void updateLiftSequence() {
     float bestShift, bestMargin;
     findBestStabilityShift(bx, by, liftStanceX, liftStanceY, bestShift, bestMargin);
     if (bestMargin < MIN_STABILITY_MARGIN_MM) {
-      Serial.print("Lift aborted: best achievable stability margin is ");
+      Serial.print(F("Lift aborted: best achievable stability margin is "));
       Serial.print(bestMargin, 0);
-      Serial.print("mm, below the ");
+      Serial.print(F("mm, below the "));
       Serial.print(MIN_STABILITY_MARGIN_MM, 0);
-      Serial.println("mm safety floor -- not attempting a shift from this stance.");
+      Serial.println(F("mm safety floor -- not attempting a shift from this stance."));
       abortLiftSequence();
       return;
     }
@@ -2003,7 +2017,7 @@ void updateLiftSequence() {
       int i = liftStanceIdx[k];
       int forceBranch = (i == RL || i == RR) ? 1 : -1;
       if (!setFoot(i, liftStanceX[k] - bestShift, liftStanceY[k], forceBranch)) {
-        Serial.println("Lift aborted: weight-shift target unreachable.");
+        Serial.println(F("Lift aborted: weight-shift target unreachable."));
         abortLiftSequence();
         return;
       }
@@ -2034,9 +2048,9 @@ void updateLiftSequence() {
       footBodyPosition(liftStanceIdx[2], cx, cy);
       float settledMargin = stabilityMargin(0, 0, ax, ay, bx2, by2, cx, cy);
       if (settledMargin < MIN_STABILITY_MARGIN_MM) {
-        Serial.print("Lift aborted: settled stability margin is ");
+        Serial.print(F("Lift aborted: settled stability margin is "));
         Serial.print(settledMargin, 0);
-        Serial.println("mm after shifting -- below the safety floor, not proceeding to lift.");
+        Serial.println(F("mm after shifting -- below the safety floor, not proceeding to lift."));
         abortLiftSequence();
         return;
       }
@@ -2050,11 +2064,11 @@ void updateLiftSequence() {
       float pitch, roll;
       readMPU6050(pitch, roll);
       if (fabs(pitch) > LIFT_PRELIFT_TILT_LIMIT_DEG || fabs(roll) > LIFT_PRELIFT_TILT_LIMIT_DEG) {
-        Serial.print("Lift aborted: body tilt pitch=");
+        Serial.print(F("Lift aborted: body tilt pitch="));
         Serial.print(pitch, 1);
-        Serial.print(" roll=");
+        Serial.print(F(" roll="));
         Serial.print(roll, 1);
-        Serial.println(" already exceeds the pre-lift stability check -- not safe to lift from this stance.");
+        Serial.println(F(" already exceeds the pre-lift stability check -- not safe to lift from this stance."));
         abortLiftSequence();
         return;
       }
@@ -2083,10 +2097,12 @@ void updateLiftSequence() {
     bool reversing = false;
     if (tof1_ok) {
       float freshForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
-      Serial.print("Re-measured step distance: "); Serial.print(freshForwardMM, 0);
-      Serial.print("mm forward (scan estimate was "); Serial.print(liftStepForwardMM, 0);
-      Serial.println("mm).");
-      liftStepForwardMM = freshForwardMM;
+      Serial.print(F("Re-measured step distance: ")); Serial.print(freshForwardMM, 0);
+      Serial.print(F("mm forward (scan estimate was ")); Serial.print(liftStepForwardMM, 0);
+      Serial.println(F("mm)."));
+      // + STEP_LANDING_DEPTH_MM: land onto the step's surface, not its
+      // front edge -- see that constant's comment above.
+      liftStepForwardMM = freshForwardMM + STEP_LANDING_DEPTH_MM;
 
       // Back away for tuck/lift clearance NOW, while tof1_mm is known
       // good -- see LIFT_REVERSE_CLEARANCE_MM's comment above for why
@@ -2101,8 +2117,8 @@ void updateLiftSequence() {
         reversing = true;
       }
     } else {
-      Serial.println("Re-measure: ToF1 reading invalid, keeping the scan-derived estimate.");
-      if (liftIsStepPlace) Serial.println("Skipping pre-lift reverse: ToF1 reading invalid.");
+      Serial.println(F("Re-measure: ToF1 reading invalid, keeping the scan-derived estimate."));
+      if (liftIsStepPlace) Serial.println(F("Skipping pre-lift reverse: ToF1 reading invalid."));
     }
     if (!reversing) {
       // Back to the verified stance before continuing.
@@ -2147,14 +2163,14 @@ void updateLiftSequence() {
         float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
         float y = computeClearY();
         float maxForwardAtY = sqrt(max(0.0f, maxReach * maxReach - y * y)) - LIFT_APPROACH_REACH_MARGIN_MM;
-        Serial.print("Out of reach at "); Serial.print(liftStepForwardMM, 0);
-        Serial.print("mm -- approaching to ~"); Serial.print(maxForwardAtY, 0);
-        Serial.println("mm on the wheels first.");
+        Serial.print(F("Out of reach at ")); Serial.print(liftStepForwardMM, 0);
+        Serial.print(F("mm -- approaching to ~")); Serial.print(maxForwardAtY, 0);
+        Serial.println(F("mm on the wheels first."));
         startDriveToTof(LIFT_APPROACH_SPEED, maxForwardAtY - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
         liftState = LIFT_APPROACH;
       }
     } else {
-      Serial.println("Leg lifted (tucked).");
+      Serial.println(F("Leg lifted (tucked)."));
       liftState = LIFT_HOLDING;
     }
 
@@ -2167,9 +2183,10 @@ void updateLiftSequence() {
     // same condition the scan/remeasure both rely on).
     pollTofSensors();
     if (tof1_ok) {
-      liftStepForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
+      // + STEP_LANDING_DEPTH_MM: same reasoning as LIFT_REMEASURE_DOWN.
+      liftStepForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM + STEP_LANDING_DEPTH_MM;
     } else {
-      Serial.println("Approach: ToF1 reading invalid, keeping the pre-approach distance estimate.");
+      Serial.println(F("Approach: ToF1 reading invalid, keeping the pre-approach distance estimate."));
     }
     startTraverseToStep();
 
@@ -2216,7 +2233,7 @@ void updateLiftSequence() {
     // Same forceBranch reasoning as LIFT_TUCK above.
     int forceBranch = (liftLegIdx == FL || liftLegIdx == FR) ? 0 : -1;
     if (!setFoot(liftLegIdx, liftStepForwardMM, stepY, forceBranch)) {
-      Serial.println("Step placement aborted: descent target unreachable -- check step height against this leg's workspace.");
+      Serial.println(F("Step placement aborted: descent target unreachable -- check step height against this leg's workspace."));
       liftState = LIFT_HOLDING; // still elevated and clear of the step; leave it there, not mid-fault
       return;
     }
@@ -2255,7 +2272,7 @@ void updateLiftSequence() {
       for (int k = 0; k < 3; k++) allDone = allDone && legMoveDone(liftStanceIdx[k]);
     }
     if (!allDone) return;
-    Serial.println("Leg lowered, stance restored.");
+    Serial.println(F("Leg lowered, stance restored."));
     abortLiftSequence(); // successful completion, not actually an abort -- just reuses the same "return to idle, reset speed" bookkeeping
   }
 }
@@ -2271,9 +2288,9 @@ void updateAutoStep() {
   if (autoStepState != AUTO_PLACING) return;
   if (liftState == LIFT_HOLDING) {
     if (liftTiltAborted) {
-      Serial.println("Auto step placement ABORTED -- tilt safety triggered mid-sequence, foot NOT reliably placed. Send 'lower' to retract.");
+      Serial.println(F("Auto step placement ABORTED -- tilt safety triggered mid-sequence, foot NOT reliably placed. Send 'lower' to retract."));
     } else {
-      Serial.println("Auto step placement complete -- foot on step. Send 'lower' when ready to retract.");
+      Serial.println(F("Auto step placement complete -- foot on step. Send 'lower' when ready to retract."));
     }
     autoStepState = AUTO_IDLE;
   } else if (liftState == LIFT_IDLE) {
@@ -2293,7 +2310,7 @@ void setupMPU6050() {
   Wire.write(0x00);
   Wire.endTransmission(true);
   delay(100);
-  Serial.println("MPU6050 ready.");
+  Serial.println(F("MPU6050 ready."));
 }
 
 void readMPU6050(float &pitch, float &roll) {
@@ -2319,12 +2336,12 @@ void readMPU6050(float &pitch, float &roll) {
 void checkLevel() {
   float pitch, roll;
   readMPU6050(pitch, roll);
-  Serial.print("Pitch:"); Serial.print(pitch, 1);
-  Serial.print("  Roll:"); Serial.print(roll, 1);
+  Serial.print(F("Pitch:")); Serial.print(pitch, 1);
+  Serial.print(F("  Roll:")); Serial.print(roll, 1);
   if (fabs(pitch) <= LEVEL_TOLERANCE_DEG && fabs(roll) <= LEVEL_TOLERANCE_DEG) {
-    Serial.println("  -> Level");
+    Serial.println(F("  -> Level"));
   } else {
-    Serial.println("  -> NOT level");
+    Serial.println(F("  -> NOT level"));
   }
 }
 
@@ -2354,9 +2371,9 @@ void setupVL53L0X() {
     tof2.setMeasurementTimingBudget(50000);
     tof2.startContinuous(100);
     tof2Active = true;
-    Serial.println("Sensor 2 ready (0x52).");
+    Serial.println(F("Sensor 2 ready (0x52)."));
   } else {
-    Serial.println("Sensor 2 not found — skipping.");
+    Serial.println(F("Sensor 2 not found — skipping."));
   }
 
   // Sensor 1 — safe to boot now, no address conflict
@@ -2371,9 +2388,9 @@ void setupVL53L0X() {
     tof1.setMeasurementTimingBudget(50000);
     tof1.startContinuous(100);
     tof1Active = true;
-    Serial.println("Sensor 1 ready (0x29).");
+    Serial.println(F("Sensor 1 ready (0x29)."));
   } else {
-    Serial.println("Sensor 1 not found — skipping.");
+    Serial.println(F("Sensor 1 not found — skipping."));
   }
 }
 
@@ -2409,27 +2426,27 @@ void printSensors() {
   float pitch, roll;
   readMPU6050(pitch, roll);
 
-  Serial.print("Pitch:"); Serial.print(pitch, 1);
-  Serial.print("  Roll:"); Serial.print(roll, 1);
+  Serial.print(F("Pitch:")); Serial.print(pitch, 1);
+  Serial.print(F("  Roll:")); Serial.print(roll, 1);
 
   if (tof1Active) {
     if (tof1_ok) {
-      Serial.print("  ToF1:"); Serial.print(tof1_mm); Serial.print("mm");
+      Serial.print(F("  ToF1:")); Serial.print(tof1_mm); Serial.print(F("mm"));
     } else {
-      Serial.print("  ToF1:---(raw="); Serial.print(tof1_mm); Serial.print(")");
+      Serial.print(F("  ToF1:---(raw=")); Serial.print(tof1_mm); Serial.print(F(")"));
     }
   } else {
-    Serial.print("  ToF1:N/A");
+    Serial.print(F("  ToF1:N/A"));
   }
 
   if (tof2Active) {
     if (tof2_ok) {
-      Serial.print("  ToF2:"); Serial.print(tof2_mm); Serial.print("mm");
+      Serial.print(F("  ToF2:")); Serial.print(tof2_mm); Serial.print(F("mm"));
     } else {
-      Serial.print("  ToF2:---(raw="); Serial.print(tof2_mm); Serial.print(")");
+      Serial.print(F("  ToF2:---(raw=")); Serial.print(tof2_mm); Serial.print(F(")"));
     }
   } else {
-    Serial.print("  ToF2:N/A");
+    Serial.print(F("  ToF2:N/A"));
   }
 
   Serial.println();
@@ -2473,7 +2490,7 @@ void handleCommand(String input) {
     setKnee(RR, 70);
     setHip(FL, 70);
     setHip(FR, 70);
-    Serial.println("Start stance applied.");
+    Serial.println(F("Start stance applied."));
 
   } else if (input == "angles") {
     // Prints every leg's CURRENT commanded hip/knee at once -- avoids
@@ -2482,41 +2499,41 @@ void handleCommand(String input) {
     // before this existed: a truncated log once left FL's actual final
     // angles misread as its very first jog value instead).
     const char* legNames[NUM_HIPS] = { "FL", "FR", "RL", "RR" };
-    Serial.println("Current joint angles (hip/knee):");
+    Serial.println(F("Current joint angles (hip/knee):"));
     for (int i = 0; i < NUM_HIPS; i++) {
-      Serial.print("  "); Serial.print(legNames[i]);
-      Serial.print(": hip="); Serial.print(hipPos[i]);
-      Serial.print(" knee="); Serial.println(kneePos[i]);
+      Serial.print(F("  ")); Serial.print(legNames[i]);
+      Serial.print(F(": hip=")); Serial.print(hipPos[i]);
+      Serial.print(F(" knee=")); Serial.println(kneePos[i]);
     }
-    Serial.println("As #define lines:");
+    Serial.println(F("As #define lines:"));
     for (int i = 0; i < NUM_HIPS; i++) {
-      Serial.print("#define PRECLIMB_HIP_");  Serial.print(legNames[i]); Serial.print("   "); Serial.println(hipPos[i]);
-      Serial.print("#define PRECLIMB_KNEE_"); Serial.print(legNames[i]); Serial.print("  "); Serial.println(kneePos[i]);
+      Serial.print(F("#define PRECLIMB_HIP_"));  Serial.print(legNames[i]); Serial.print(F("   ")); Serial.println(hipPos[i]);
+      Serial.print(F("#define PRECLIMB_KNEE_")); Serial.print(legNames[i]); Serial.print(F("  ")); Serial.println(kneePos[i]);
     }
 
   } else if (input == "climb_low_prep") {
     commandClimbPose(CLIMB_PREP_LOW);
-    Serial.println("Commanding CLIMB_PREP_LOW.");
+    Serial.println(F("Commanding CLIMB_PREP_LOW."));
 
   } else if (input == "climb_low_lift") {
     commandClimbPose(CLIMB_LIFT_LOW);
-    Serial.println("Commanding CLIMB_LIFT_LOW.");
+    Serial.println(F("Commanding CLIMB_LIFT_LOW."));
 
   } else if (input == "climb_mid_prep") {
     commandClimbPose(CLIMB_PREP_MID);
-    Serial.println("Commanding CLIMB_PREP_MID.");
+    Serial.println(F("Commanding CLIMB_PREP_MID."));
 
   } else if (input == "climb_mid_lift") {
     commandClimbPose(CLIMB_LIFT_MID);
-    Serial.println("Commanding CLIMB_LIFT_MID.");
+    Serial.println(F("Commanding CLIMB_LIFT_MID."));
 
   } else if (input == "climb_tall_prep") {
     commandClimbPose(CLIMB_PREP_TALL);
-    Serial.println("Commanding CLIMB_PREP_TALL.");
+    Serial.println(F("Commanding CLIMB_PREP_TALL."));
 
   } else if (input == "climb_tall_lift") {
     commandClimbPose(CLIMB_LIFT_TALL);
-    Serial.println("Commanding CLIMB_LIFT_TALL.");
+    Serial.println(F("Commanding CLIMB_LIFT_TALL."));
 
   } else if (input == "sensors") {
     printSensors();
@@ -2526,49 +2543,49 @@ void handleCommand(String input) {
 
   } else if (input == "balance on") {
     balanceEnabled = true;
-    Serial.println("Self-balancing enabled.");
+    Serial.println(F("Self-balancing enabled."));
 
   } else if (input == "balance off") {
     balanceEnabled = false;
     for (int i = 0; i < NUM_HIPS; i++) legHeightCorrection[i] = 0;
     setBodyHeight(lastCommandedHeight); // return to the uncorrected, uniform height
-    Serial.println("Self-balancing disabled, corrections reset.");
+    Serial.println(F("Self-balancing disabled, corrections reset."));
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help");
+    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {
     if (startStepScan()) {
-      Serial.println("Scanning 0->100%, will report ToF1 only on a large jump...");
+      Serial.println(F("Scanning 0->100%, will report ToF1 only on a large jump..."));
     } else {
-      Serial.println("Cannot start scan (already scanning, or a stand move is already in progress).");
+      Serial.println(F("Cannot start scan (already scanning, or a stand move is already in progress)."));
     }
 
   } else if (input == "stand") {
     if (startStandMove(1.0)) {
-      Serial.println("Standing up...");
+      Serial.println(F("Standing up..."));
     } else if (standProgress >= 1.0) {
-      Serial.println("Already standing.");
+      Serial.println(F("Already standing."));
     } else {
-      Serial.println("Already moving.");
+      Serial.println(F("Already moving."));
     }
 
   } else if (input.startsWith("stand ")) {
     float pct = constrain(input.substring(6).toFloat(), 0.0, 100.0);
     if (startStandMove(pct / 100.0)) {
-      Serial.print("Moving to "); Serial.print(pct); Serial.println("% stand...");
+      Serial.print(F("Moving to ")); Serial.print(pct); Serial.println(F("% stand..."));
     } else {
-      Serial.println("Already moving, or already at that percent.");
+      Serial.println(F("Already moving, or already at that percent."));
     }
 
   } else if (input == "lift_fl" || input == "lift_fr" || input == "lift_rl" || input == "lift_rr") {
     int legIdx = (input == "lift_fl") ? FL : (input == "lift_fr") ? FR : (input == "lift_rl") ? RL : RR;
     if (startLift(legIdx)) {
-      Serial.println("Raising to a stable stance before lift...");
+      Serial.println(F("Raising to a stable stance before lift..."));
     } else {
-      Serial.println("Cannot start lift (already mid-sequence).");
+      Serial.println(F("Cannot start lift (already mid-sequence)."));
     }
 
   } else if (input.startsWith("step_fl ") || input.startsWith("step_fr ") ||
@@ -2582,44 +2599,44 @@ void handleCommand(String input) {
       float forwardMM = rest.substring(0, sep).toFloat();
       float heightMM  = rest.substring(sep + 1).toFloat();
       if (startPlaceOnStep(legIdx, forwardMM, heightMM)) {
-        Serial.println("Raising to a stable stance before step placement...");
+        Serial.println(F("Raising to a stable stance before step placement..."));
       } else {
-        Serial.println("Cannot start step placement (already mid-sequence).");
+        Serial.println(F("Cannot start step placement (already mid-sequence)."));
       }
     } else {
-      Serial.println("Usage: step_fl/fr/rl/rr <forward_mm> <step_height_mm>");
+      Serial.println(F("Usage: step_fl/fr/rl/rr <forward_mm> <step_height_mm>"));
     }
 
   } else if (input == "step_scan_fl" || input == "step_scan_fr" ||
              input == "step_scan_rl" || input == "step_scan_rr") {
     if (!lastDetectedStepValid) {
-      Serial.println("No step estimate yet -- run stand_sweep first and watch for an estimated-step line.");
+      Serial.println(F("No step estimate yet -- run stand_sweep first and watch for an estimated-step line."));
     } else {
       int legIdx = (input == "step_scan_fl") ? FL : (input == "step_scan_fr") ? FR :
                    (input == "step_scan_rl") ? RL : RR;
-      Serial.print("Using last scan estimate: height~"); Serial.print(lastDetectedStepHeightMM, 0);
-      Serial.print("mm at ~"); Serial.print(lastDetectedStepForwardMM, 0); Serial.println("mm forward.");
+      Serial.print(F("Using last scan estimate: height~")); Serial.print(lastDetectedStepHeightMM, 0);
+      Serial.print(F("mm at ~")); Serial.print(lastDetectedStepForwardMM, 0); Serial.println(F("mm forward."));
       if (startPlaceOnStep(legIdx, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
-        Serial.println("Raising to a stable stance before step placement...");
+        Serial.println(F("Raising to a stable stance before step placement..."));
       } else {
-        Serial.println("Cannot start step placement (already mid-sequence).");
+        Serial.println(F("Cannot start step placement (already mid-sequence)."));
       }
     }
 
   } else if (input == "lower") {
     if (startLower()) {
-      Serial.println("Lowering leg...");
+      Serial.println(F("Lowering leg..."));
     } else {
-      Serial.println("No leg currently lifted.");
+      Serial.println(F("No leg currently lifted."));
     }
 
   } else if (input == "second_fr") {
     // See startSecondLegOntoStep() -- untested stance, no verified
     // pose for "one front leg already on the step." Watch closely.
     if (startSecondLegOntoStep(FR)) {
-      Serial.println("Placing FR onto the step next to the held leg -- UNTESTED stance, watch closely.");
+      Serial.println(F("Placing FR onto the step next to the held leg -- UNTESTED stance, watch closely."));
     } else {
-      Serial.println("Cannot start second-leg placement (first leg isn't down-and-holding, is already FR, or a safety abort is active -- send 'lower' first if so).");
+      Serial.println(F("Cannot start second-leg placement (first leg isn't down-and-holding, is already FR, or a safety abort is active -- send 'lower' first if so)."));
     }
 
   } else if (input.startsWith("drive ")) {
@@ -2629,10 +2646,10 @@ void handleCommand(String input) {
       int speed = rest.substring(0, sep).toInt();
       unsigned long durationMs = (unsigned long)rest.substring(sep + 1).toInt();
       startDrive(speed, durationMs);
-      Serial.print("Driving at "); Serial.print(speed);
-      Serial.print(" for "); Serial.print(durationMs); Serial.println("ms.");
+      Serial.print(F("Driving at ")); Serial.print(speed);
+      Serial.print(F(" for ")); Serial.print(durationMs); Serial.println(F("ms."));
     } else {
-      Serial.println("Usage: drive <speed -255..255> <duration_ms>");
+      Serial.println(F("Usage: drive <speed -255..255> <duration_ms>"));
     }
 
   } else if (input.startsWith("drive_to ")) {
@@ -2644,24 +2661,24 @@ void handleCommand(String input) {
       float targetMM = rest.substring(sep1 + 1, sep2).toFloat();
       unsigned long timeoutMs = (unsigned long)rest.substring(sep2 + 1).toInt();
       startDriveToTof(speed, targetMM, timeoutMs);
-      Serial.print("Driving at "); Serial.print(speed);
-      Serial.print(" until ToF1 "); Serial.print(speed > 0 ? "<= " : ">= "); Serial.print(targetMM, 0);
-      Serial.print("mm, timeout "); Serial.print(timeoutMs); Serial.println("ms.");
+      Serial.print(F("Driving at ")); Serial.print(speed);
+      Serial.print(F(" until ToF1 ")); Serial.print(speed > 0 ? "<= " : ">= "); Serial.print(targetMM, 0);
+      Serial.print(F("mm, timeout ")); Serial.print(timeoutMs); Serial.println(F("ms."));
     } else {
-      Serial.println("Usage: drive_to <speed -255..255> <target_mm> <timeout_ms>");
+      Serial.println(F("Usage: drive_to <speed -255..255> <target_mm> <timeout_ms>"));
     }
 
   } else if (input == "drive_stop") {
     stopWheels();
     squareState = SQUARE_IDLE; // also cancels an in-progress square-up
     turnTestActive = false; // also cancels an in-progress turn test
-    Serial.println("Wheels stopped.");
+    Serial.println(F("Wheels stopped."));
 
   } else if (input == "square") {
     if (startSquareUp()) {
-      Serial.println("Squaring up (turning until ToF1/ToF2 agree)...");
+      Serial.println(F("Squaring up (turning until ToF1/ToF2 agree)..."));
     } else {
-      Serial.println("Cannot start square-up (already running, a drive is active, or ToF1/ToF2 reading is invalid).");
+      Serial.println(F("Cannot start square-up (already running, a drive is active, or ToF1/ToF2 reading is invalid)."));
     }
 
   } else if (input.startsWith("turn_test ")) {
@@ -2671,18 +2688,18 @@ void handleCommand(String input) {
       int speed = rest.substring(0, sep).toInt();
       unsigned long durationMs = (unsigned long)rest.substring(sep + 1).toInt();
       if (startTurnTest(speed, durationMs)) {
-        Serial.println("Turn test running -- mark position/heading before AND after, then measure by hand.");
+        Serial.println(F("Turn test running -- mark position/heading before AND after, then measure by hand."));
       } else {
-        Serial.println("Cannot start turn test (a drive, square-up, or another turn test is already active).");
+        Serial.println(F("Cannot start turn test (a drive, square-up, or another turn test is already active)."));
       }
     } else {
-      Serial.println("Usage: turn_test <speed -255..255> <duration_ms>");
+      Serial.println(F("Usage: turn_test <speed -255..255> <duration_ms>"));
     }
 
   } else if (input.startsWith("all ")) {
     int angle = input.substring(4).toInt();
     allHips(angle);
-    Serial.print("All hips -> "); Serial.println(angle);
+    Serial.print(F("All hips -> ")); Serial.println(angle);
 
   } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ") ||
              input.startsWith("foot_rl ") || input.startsWith("foot_rr ")) {
@@ -2698,13 +2715,13 @@ void handleCommand(String input) {
       float x = rest.substring(0, sep).toFloat();
       float y = rest.substring(sep + 1).toFloat();
       if (setFoot(legIdx, x, y)) {
-        Serial.print(legName); Serial.print(" -> hip="); Serial.print(hipPos[legIdx]);
-        Serial.print(" knee="); Serial.println(kneePos[legIdx]);
+        Serial.print(legName); Serial.print(F(" -> hip=")); Serial.print(hipPos[legIdx]);
+        Serial.print(F(" knee=")); Serial.println(kneePos[legIdx]);
       } else {
-        Serial.print(legName); Serial.println(" target unreachable.");
+        Serial.print(legName); Serial.println(F(" target unreachable."));
       }
     } else {
-      Serial.print("Usage: "); Serial.print(legName); Serial.println(" <x_mm> <y_mm>");
+      Serial.print(F("Usage: ")); Serial.print(legName); Serial.println(F(" <x_mm> <y_mm>"));
     }
 
   } else {
@@ -2716,7 +2733,7 @@ void handleCommand(String input) {
       for (int i = 0; i < NUM_HIPS; i++) {
         if (name == HIP_NAMES[i]) {
           setHip(i, angle);
-          Serial.print(HIP_NAMES[i]); Serial.print(" -> "); Serial.println(hipPos[i]);
+          Serial.print(HIP_NAMES[i]); Serial.print(F(" -> ")); Serial.println(hipPos[i]);
           found = true;
           break;
         }
@@ -2725,16 +2742,16 @@ void handleCommand(String input) {
         if (name == KNEE_NAMES[i]) {
           if (kneeInstalled[i]) {
             setKnee(i, angle);
-            Serial.print(KNEE_NAMES[i]); Serial.print(" -> "); Serial.println(kneePos[i]);
+            Serial.print(KNEE_NAMES[i]); Serial.print(F(" -> ")); Serial.println(kneePos[i]);
           } else {
-            Serial.print(KNEE_NAMES[i]); Serial.println(" not installed yet.");
+            Serial.print(KNEE_NAMES[i]); Serial.println(F(" not installed yet."));
           }
           found = true;
         }
       }
-      if (!found) Serial.println("Unknown command. Type 'help'.");
+      if (!found) Serial.println(F("Unknown command. Type 'help'."));
     } else {
-      Serial.println("Unknown command. Type 'help'.");
+      Serial.println(F("Unknown command. Type 'help'."));
     }
   }
 }
@@ -2801,7 +2818,7 @@ void stopWheels() {
 // re-issuing any other move in this file).
 void startDrive(int speed, unsigned long durationMs) {
   if (squareState != SQUARE_IDLE) {
-    Serial.println("Cannot drive: square-up is in progress.");
+    Serial.println(F("Cannot drive: square-up is in progress."));
     return;
   }
   setWheelSpeeds(speed);
@@ -2825,7 +2842,7 @@ void startDrive(int speed, unsigned long durationMs) {
 // target -- always stops by then regardless of what ToF1 says.
 void startDriveToTof(int speed, float targetMM, unsigned long timeoutMs) {
   if (squareState != SQUARE_IDLE) {
-    Serial.println("Cannot drive: square-up is in progress.");
+    Serial.println(F("Cannot drive: square-up is in progress."));
     return;
   }
   setWheelSpeeds(speed);
@@ -2972,24 +2989,24 @@ void updateTurnTest() {
   if ((long)(millis() - turnTestStopAtMs) >= 0) {
     setWheelSpeedsLR(0, 0);
     turnTestActive = false;
-    Serial.println("Turn test complete -- measure the actual rotation/drift now.");
+    Serial.println(F("Turn test complete -- measure the actual rotation/drift now."));
   }
 }
 
 bool startSquareUp() {
   if (squareState != SQUARE_IDLE || driveActive) return false;
   if (!tof1_ok || !tof2_ok) {
-    Serial.println("Cannot square: ToF1/ToF2 reading invalid.");
+    Serial.println(F("Cannot square: ToF1/ToF2 reading invalid."));
     return false;
   }
   float adjustedDiff = tof1Filtered() - tof2Filtered() - SQUARE_DIFF_OFFSET_MM;
-  Serial.print("Square check: ToF1="); Serial.print(tof1_mm);
-  Serial.print(" ToF2="); Serial.print(tof2_mm);
-  Serial.print(" (filtered "); Serial.print(tof1Filtered(), 0);
-  Serial.print("/"); Serial.print(tof2Filtered(), 0);
-  Serial.print(") adjustedDiff="); Serial.println(adjustedDiff, 0);
+  Serial.print(F("Square check: ToF1=")); Serial.print(tof1_mm);
+  Serial.print(F(" ToF2=")); Serial.print(tof2_mm);
+  Serial.print(F(" (filtered ")); Serial.print(tof1Filtered(), 0);
+  Serial.print(F("/")); Serial.print(tof2Filtered(), 0);
+  Serial.print(F(") adjustedDiff=")); Serial.println(adjustedDiff, 0);
   if (fabs(adjustedDiff) <= SQUARE_TOLERANCE_MM) {
-    Serial.println("Already square (within tolerance).");
+    Serial.println(F("Already square (within tolerance)."));
     return true;
   }
   squareAttempts = 0;
@@ -3018,26 +3035,26 @@ void updateSquareUp() {
 
   // SQUARE_VERIFY
   if (!tof1_ok || !tof2_ok) {
-    Serial.println("Square aborted: ToF reading lost mid-maneuver.");
+    Serial.println(F("Square aborted: ToF reading lost mid-maneuver."));
     squareState = SQUARE_IDLE;
     return;
   }
   float adjustedDiff = tof1Filtered() - tof2Filtered() - SQUARE_DIFF_OFFSET_MM;
-  Serial.print("Square check: ToF1="); Serial.print(tof1_mm);
-  Serial.print(" ToF2="); Serial.print(tof2_mm);
-  Serial.print(" (filtered "); Serial.print(tof1Filtered(), 0);
-  Serial.print("/"); Serial.print(tof2Filtered(), 0);
-  Serial.print(") adjustedDiff="); Serial.println(adjustedDiff, 0);
+  Serial.print(F("Square check: ToF1=")); Serial.print(tof1_mm);
+  Serial.print(F(" ToF2=")); Serial.print(tof2_mm);
+  Serial.print(F(" (filtered ")); Serial.print(tof1Filtered(), 0);
+  Serial.print(F("/")); Serial.print(tof2Filtered(), 0);
+  Serial.print(F(") adjustedDiff=")); Serial.println(adjustedDiff, 0);
 
   if (fabs(adjustedDiff) <= SQUARE_TOLERANCE_MM) {
-    Serial.println("Square: aligned.");
+    Serial.println(F("Square: aligned."));
     squareState = SQUARE_IDLE;
     return;
   }
 
   squareAttempts++;
   if (squareAttempts >= SQUARE_MAX_ATTEMPTS) {
-    Serial.println("Square aborted: too many attempts, not converging.");
+    Serial.println(F("Square aborted: too many attempts, not converging."));
     squareState = SQUARE_IDLE;
     return;
   }
@@ -3054,7 +3071,7 @@ void setup() {
   Serial.begin(57600); // dropped from 115200 -- was dropping/stalling at the higher rate
   delay(2000);
   Serial.println(FIRMWARE_BUILD);
-  Serial.println("Booting...");
+  Serial.println(F("Booting..."));
   Wire.begin();
   // Without this, a glitched I2C transaction (e.g. electrical noise
   // from the servos coupling into SDA/SCL) can hang Wire.* calls
@@ -3075,7 +3092,7 @@ void setup() {
     kneePos[i] = KNEE_START[i];
     setKnee(i, KNEE_START[i]);
   }
-  Serial.println("Servos OK");
+  Serial.println(F("Servos OK"));
 
   for (int i = 0; i < NUM_HIPS; i++) {
     pinMode(WHEEL_IN1_PINS[i], OUTPUT);
@@ -3083,7 +3100,7 @@ void setup() {
     pinMode(WHEEL_EN_PINS[i], OUTPUT);
   }
   stopWheels();
-  Serial.println("Wheel drive OK");
+  Serial.println(F("Wheel drive OK"));
 
   setupVL53L0X();
   setupMPU6050();
@@ -3096,10 +3113,10 @@ void setup() {
   // chance to start animating it. Send "stand" to raise it gradually
   // to full standing height from here.
   enterCrouchLow();
-  Serial.println("Startup height (confirmed low crouch) -> stand up with 'stand'.");
+  Serial.println(F("Startup height (confirmed low crouch) -> stand up with 'stand'."));
 
   Serial.println();
-  Serial.println("Ready. Type 'help' for commands.");
+  Serial.println(F("Ready. Type 'help' for commands."));
   Serial.println();
 }
 

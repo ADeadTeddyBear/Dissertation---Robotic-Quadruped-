@@ -1359,8 +1359,22 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // with FL resting higher than the other three feet, some pitch is
 // physically unavoidable unless the stance legs also rise to
 // compensate, which isn't implemented.
+//
+// Tilt trigger loosened back 2.0->4.0: with LIFT_APPROACH now driving
+// the leg to a near-straight (margin=0) target instead of a tucked
+// one, the descent covers a much bigger net motion than when 2.0 was
+// tuned -- confirmed on hardware firing well before the leg reached
+// anywhere near its target angle, freezing it still visibly bent every
+// time ("stopped early: contact detected via tilt" on every logged
+// run). This re-opens the ORIGINAL overshoot risk the 4.0->2.0 change
+// was fixing (some extra chassis pitch/torque after genuine contact,
+// before the next check fires) -- accepted for now since a leg that
+// never finishes extending is the worse failure. Watch the first
+// several placements for that overshoot returning; if so, the real
+// fix is re-verifying liftStepHeightMM (still the original, never
+// re-measured scan estimate) rather than re-tightening this.
 #define LIFT_DESCEND_STEPS 12
-#define LIFT_CONTACT_TILT_DELTA_DEG 2.0
+#define LIFT_CONTACT_TILT_DELTA_DEG 4.0
 
 // Every lift/step-placement now raises to a NEAR-full stand first
 // (not exactly 1.0 -- that's the same zero-slack extreme that broke

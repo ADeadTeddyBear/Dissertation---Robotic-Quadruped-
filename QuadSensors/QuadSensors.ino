@@ -1678,18 +1678,24 @@ bool startSecondLegOntoStep(int legToLift) {
 // run tripped this at pitch=4.3/roll=10.1 during a step-place attempt
 // on the verified pre-climb stance -- a stance already confirmed by
 // hand to carry real load and resist a push -- while the confirmed
-// genuine falls seen so far reached 35-41 degrees. 15 clears that
-// nuisance case with room to spare while staying well below the range
-// that's actually been an unrecoverable topple.
-#define LIFT_TILT_ABORT_DEG 15.0
+// genuine falls seen so far reached 35-41 degrees. Raised again from 15
+// to 20 to give more headroom for the newer wheel-driven maneuvers
+// (LIFT_REVERSE/LIFT_APPROACH), which are more dynamic than a plain
+// leg-only reposition and more likely to produce real-but-harmless
+// transient tilt. Still leaves 15-21 degrees of margin below the
+// confirmed genuine falls, same "clears nuisance with room to spare,
+// stays well below an actual topple" reasoning as before.
+#define LIFT_TILT_ABORT_DEG 20.0
 #define LIFT_TILT_CHECK_MS  50  // how often to poll the IMU while a sequence is active
 
 // Tighter than LIFT_TILT_ABORT_DEG on purpose: this is the "are we
 // actually stable enough to COMMIT to lifting a leg off the ground"
 // check, not the "is it actively falling over" check -- want to catch
 // a stance that's already leaning before removing one of its four
-// points of contact, not just once it's clearly too late.
-#define LIFT_PRELIFT_TILT_LIMIT_DEG 5.0
+// points of contact, not just once it's clearly too late. Raised from
+// 5 to 8 alongside LIFT_TILT_ABORT_DEG above, keeping the same ratio
+// of "commit gate is meaningfully tighter than the active-abort net."
+#define LIFT_PRELIFT_TILT_LIMIT_DEG 8.0
 
 unsigned long lastLiftTiltCheckMs = 0;
 

@@ -1413,12 +1413,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // LIFT_REVERSE's clearance happens to push liftStepForwardMM out of
 // range (confirmed on hardware doing exactly that: 353mm measured +
 // 150mm clearance = 503mm requested, past the 360mm physical ceiling).
-// This margin is now the direct "how much bend is left in the final
-// knee angle" knob -- smaller margin = closer to full extension = less
-// bend = more clearance for the SECOND front leg's own lift/tuck/reach
-// later (see second_fr). The leg itself stays exactly where the
-// hip-lift left it (tucked up, extended forward) for the whole drive.
-#define LIFT_APPROACH_REACH_MARGIN_MM 20.0
+// This margin is the direct "how much bend is left in the final knee
+// angle" knob -- smaller margin = closer to full extension = less bend
+// = further reach onto the step (a more solid placement) = more
+// clearance for the SECOND front leg's own lift/tuck/reach later (see
+// second_fr), all from the same trade-off. Lowered from 20 to 10 by
+// request (near-straight knee, not just "somewhat less bent") -- this
+// is real margin traded away, not free: right at the physical reach
+// ceiling the leg is in its most singular configuration, and every mm
+// given up here is a mm less slack against ToF noise/offset error and
+// the approach-drive's own real-world stopping imprecision (no
+// encoders) before setFoot() rejects the target as unreachable. Watch
+// for more frequent "unreachable" aborts than before; raise this back
+// toward 20 if so.
+#define LIFT_APPROACH_REACH_MARGIN_MM 10.0
 #define LIFT_APPROACH_SPEED           150
 #define LIFT_APPROACH_TIMEOUT_MS      8000
 

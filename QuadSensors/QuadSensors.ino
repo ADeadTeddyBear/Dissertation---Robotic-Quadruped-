@@ -1389,6 +1389,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_REVERSE_SPEED        -150
 #define LIFT_REVERSE_TIMEOUT_MS   8000
 
+// LIFT_REVERSE's clearance can push liftStepForwardMM out past this
+// leg's own max reach (thigh+calf) -- confirmed on hardware: 353mm
+// measured + 150mm clearance = 503mm requested, well past the 360mm
+// physical ceiling, aborting the reach as unreachable. Rather than
+// abort, LIFT_TUCK checks footReachable() first and, if it's not, closes
+// the gap back in on the wheels (LIFT_APPROACH) until the remaining
+// distance is back under the ceiling with this margin -- the leg itself
+// stays exactly where the hip-lift left it (tucked up, extended
+// forward) for the whole drive, which is also the shape a second front
+// leg will later need clearance around (see second_fr).
+#define LIFT_APPROACH_REACH_MARGIN_MM 20.0
+#define LIFT_APPROACH_SPEED           150
+#define LIFT_APPROACH_TIMEOUT_MS      8000
+
 // How far (degrees) to sink all four legs, right after the stable
 // platform settles and before the actual lift begins, to re-measure
 // the step's forward distance with a fresh, LIVE ToF1 reading instead
@@ -1476,7 +1490,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_SAFE_KNEE_FR   270
 #define LIFT_LIFTED_HIP_FR  150
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1499,11 +1513,16 @@ bool liftDescendStoppedEarly = false;
 // Returns to idle from anywhere in the sequence (abort or success) --
 // centralizing this so moveSpeedScale can never be left slow after
 // the sequence ends, forgotten in one abort path but not another.
+// Also stops the wheels -- LIFT_APPROACH can be mid-drive when this
+// fires (a reachability abort right after it), and leaving the wheels
+// rolling toward the step with a leg still up is exactly the case this
+// whole function exists to prevent.
 void abortLiftSequence() {
   liftState = LIFT_IDLE;
   liftLegIdx = -1;
   liftIsSecondLeg = false;
   moveSpeedScale = 1.0;
+  stopWheels();
 }
 
 // The elevated Y used for the horizontal CLEAR/RETRACT traverses:
@@ -1689,6 +1708,7 @@ bool checkLiftTiltSafety() {
 
   freezeLeg(liftLegIdx);
   for (int k = 0; k < 3; k++) freezeLeg(liftStanceIdx[k]);
+  stopWheels(); // LIFT_APPROACH can be mid-drive when this trips -- don't keep rolling toward the step with a leg frozen mid-air
   liftTiltAborted = true;
   liftState = LIFT_HOLDING; // existing 'lower' recovery path takes over from here
   return true;
@@ -1822,6 +1842,41 @@ void startLiftSink() {
   for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
   for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
   liftState = LIFT_REMEASURE_DOWN;
+}
+
+// Moves liftLegIdx forward to the step's x while staying at the
+// elevated clear height (computeClearY()) -- NOT yet the step's own
+// target y -- so the foot is already past the leading edge before it
+// ever descends to tread height. Shared by LIFT_TUCK (leg already
+// within reach) and LIFT_APPROACH (after closing the gap on the
+// wheels) so both land in the same next state the same way.
+//
+// forceBranch pins FL/FR to ONE elbow branch for both this move and
+// LIFT_CLEAR below -- confirmed on hardware that without forcing, the
+// reach can flip branch between the two calls (visually: "swaps which
+// way the elbow is held" and places the foot back on the floor
+// instead of the step), since legMoveDone() only checks the move
+// finished, not which branch it finished in.
+//
+// Branch was first tried as 1 (matching the safe-knee step's knee=270,
+// "above KNEE_START folds forward"), but confirmed on hardware to
+// still land wrong: for this far-forward, shallow-y reach, branch 1
+// (theta2 = +kneeMag) swings the calf the SAME rotational direction as
+// the hip's forward lean -- a hyper-extended curl that folds back up
+// near the hip instead of reaching down onto the step. Branch 0
+// (theta2 = -kneeMag) folds the calf the OPPOSITE way from the hip's
+// lean -- thigh forward, shin bent back down to the foot, the natural
+// "reaching forward onto a step" shape -- so that's forced here
+// instead. The safe-knee step itself (knee=270, branch 1) is a
+// different target (tucked near the hip) and is left alone.
+void startTraverseToStep() {
+  int forceBranch = (liftLegIdx == FL || liftLegIdx == FR) ? 0 : -1;
+  if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY(), forceBranch)) {
+    Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
+    abortLiftSequence();
+    return;
+  }
+  liftState = LIFT_CLEAR;
 }
 
 // Steps the lift/reach/lower sequence forward -- call every loop() pass.
@@ -2080,41 +2135,43 @@ void updateLiftSequence() {
   } else if (liftState == LIFT_TUCK) {
     if (!legMoveDone(liftLegIdx)) return; // hip still lifting
     if (liftIsStepPlace) {
-      // Move forward to the step's x while staying at the elevated
-      // clear height -- NOT yet the step's own target y -- so the
-      // foot is already past the leading edge before it ever
-      // descends to tread height.
-      //
-      // forceBranch pins FL to ONE elbow branch for both this move and
-      // LIFT_CLEAR below -- confirmed on hardware that without forcing,
-      // the reach can flip branch between the two calls (visually:
-      // "swaps which way the elbow is held" and places the foot back
-      // on the floor instead of the step), since legMoveDone() only
-      // checks the move finished, not which branch it finished in.
-      //
-      // Branch was first tried as 1 (matching the safe-knee step's
-      // knee=270, "above KNEE_START folds forward"), but confirmed on
-      // hardware to still land wrong: for this far-forward, shallow-y
-      // reach, branch 1 (theta2 = +kneeMag) swings the calf the SAME
-      // rotational direction as the hip's forward lean -- a hyper-
-      // extended curl that folds back up near the hip instead of
-      // reaching down onto the step. Branch 0 (theta2 = -kneeMag)
-      // folds the calf the OPPOSITE way from the hip's lean -- thigh
-      // forward, shin bent back down to the foot, the natural
-      // "reaching forward onto a step" shape -- so that's forced here
-      // instead. The safe-knee step itself (knee=270, branch 1) is a
-      // different target (tucked near the hip) and is left alone.
-      int forceBranch = (liftLegIdx == FL || liftLegIdx == FR) ? 0 : -1;
-      if (!setFoot(liftLegIdx, liftStepForwardMM, computeClearY(), forceBranch)) {
-        Serial.println("Step placement aborted: clear-traverse target unreachable -- check step distance against this leg's workspace.");
-        abortLiftSequence();
-        return;
+      if (footReachable(liftStepForwardMM, computeClearY())) {
+        startTraverseToStep();
+      } else {
+        // LIFT_REVERSE's clearance can push liftStepForwardMM out past
+        // this leg's own reach -- see LIFT_APPROACH_REACH_MARGIN_MM's
+        // comment above. Close the gap on the wheels instead of
+        // aborting outright: the leg stays exactly where the hip-lift
+        // above left it (tucked up, extended forward) for the whole
+        // drive.
+        float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
+        float y = computeClearY();
+        float maxForwardAtY = sqrt(max(0.0f, maxReach * maxReach - y * y)) - LIFT_APPROACH_REACH_MARGIN_MM;
+        Serial.print("Out of reach at "); Serial.print(liftStepForwardMM, 0);
+        Serial.print("mm -- approaching to ~"); Serial.print(maxForwardAtY, 0);
+        Serial.println("mm on the wheels first.");
+        startDriveToTof(LIFT_APPROACH_SPEED, maxForwardAtY - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
+        liftState = LIFT_APPROACH;
       }
-      liftState = LIFT_CLEAR;
     } else {
       Serial.println("Leg lifted (tucked).");
       liftState = LIFT_HOLDING;
     }
+
+  } else if (liftState == LIFT_APPROACH) {
+    if (driveActive) return; // still closing the gap (or timed out -- either way driveActive clears on its own)
+    // Live re-measure rather than arithmetic against the pre-approach
+    // estimate -- same reasoning as LIFT_REMEASURE_DOWN: a fresh ToF1
+    // reading is more trustworthy than compounding estimates, and
+    // ToF1 has a clear view here (still approaching the step's face,
+    // same condition the scan/remeasure both rely on).
+    pollTofSensors();
+    if (tof1_ok) {
+      liftStepForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
+    } else {
+      Serial.println("Approach: ToF1 reading invalid, keeping the pre-approach distance estimate.");
+    }
+    startTraverseToStep();
 
   } else if (liftState == LIFT_CLEAR) {
     if (!legMoveDone(liftLegIdx)) return;

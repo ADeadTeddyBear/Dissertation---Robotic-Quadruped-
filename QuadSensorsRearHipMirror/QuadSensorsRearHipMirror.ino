@@ -1164,7 +1164,7 @@ void updateBalance() {
   lastBalanceMs = millis();
 
   float pitch, roll;
-  readMPU6050(pitch, roll);
+  if (!readMPU6050(pitch, roll)) return; // bad read -- skip this cycle rather than correct against garbage
   float tanPitch = tan(radians(pitch));
   float tanRoll  = tan(radians(roll));
 
@@ -1803,7 +1803,7 @@ bool checkLiftTiltSafety() {
   lastLiftTiltCheckMs = millis();
 
   float pitch, roll;
-  readMPU6050(pitch, roll);
+  if (!readMPU6050(pitch, roll)) return false; // bad read -- see readMPU6050()'s comment; don't abort on garbage, wait for the next poll
   if (fabs(pitch) < LIFT_TILT_ABORT_DEG && fabs(roll) < LIFT_TILT_ABORT_DEG) return false;
 
   Serial.print(F("LIFT SAFETY ABORT: body tilt pitch="));
@@ -1881,7 +1881,7 @@ bool checkClimbTiltSafety() {
   lastClimbTiltCheckMs = millis();
 
   float pitch, roll;
-  readMPU6050(pitch, roll);
+  if (!readMPU6050(pitch, roll)) return false; // bad read -- see readMPU6050()'s comment; don't abort on garbage, wait for the next poll
   if (fabs(pitch) < LIFT_TILT_ABORT_DEG && fabs(roll) < LIFT_TILT_ABORT_DEG) return false;
 
   Serial.print(F("CLIMB SAFETY ABORT: body tilt pitch="));
@@ -2154,7 +2154,10 @@ void updateLiftSequence() {
     // IMU before committing to remove one of them.
     {
       float pitch, roll;
-      readMPU6050(pitch, roll);
+      // Bad read -- see readMPU6050()'s comment. liftState stays
+      // LIFT_SETTLING (still past its dwell), so this just retries on
+      // the next loop() pass instead of acting on garbage.
+      if (!readMPU6050(pitch, roll)) return;
       if (fabs(pitch) > LIFT_PRELIFT_TILT_LIMIT_DEG || fabs(roll) > LIFT_PRELIFT_TILT_LIMIT_DEG) {
         Serial.print(F("Lift aborted: body tilt pitch="));
         Serial.print(pitch, 1);
@@ -2330,7 +2333,11 @@ void updateLiftSequence() {
     liftDescendEndY = lastCommandedHeight - liftStepHeightMM;
     liftDescendStepIdx = 0;
     liftDescendStoppedEarly = false;
-    readMPU6050(liftDescendBasePitch, liftDescendBaseRoll);
+    // Bad read -- see readMPU6050()'s comment. Retry next loop() pass
+    // rather than starting the descent with a stale/wrong baseline
+    // (liftDescendBasePitch/Roll would otherwise keep whatever they
+    // were left at by the previous leg's descent).
+    if (!readMPU6050(liftDescendBasePitch, liftDescendBaseRoll)) return;
     liftState = LIFT_DESCEND;
 
   } else if (liftState == LIFT_DESCEND) {
@@ -2343,7 +2350,10 @@ void updateLiftSequence() {
       // pre-descent baseline by more than a small amount, rather than
       // waiting for the full LIFT_TILT_ABORT_DEG safety net to trip.
       float pitch, roll;
-      readMPU6050(pitch, roll);
+      // Bad read -- see readMPU6050()'s comment. Skip this poll rather
+      // than reading a false contact (or silently missing one) off
+      // garbage data.
+      if (!readMPU6050(pitch, roll)) return;
       if (fabs(pitch - liftDescendBasePitch) > LIFT_CONTACT_TILT_DELTA_DEG ||
           fabs(roll - liftDescendBaseRoll) > LIFT_CONTACT_TILT_DELTA_DEG) {
         liftDescendStoppedEarly = (liftDescendStepIdx < LIFT_DESCEND_STEPS);
@@ -2443,11 +2453,24 @@ void setupMPU6050() {
   Serial.println(F("MPU6050 ready."));
 }
 
-void readMPU6050(float &pitch, float &roll) {
+// Returns false on a failed/short I2C read instead of trusting
+// whatever's in the buffer -- confirmed on hardware as a real failure
+// mode, not theoretical: a glitched read leaves Wire.read() returning
+// -1 for every unreceived byte, so AcX=AcY=AcZ=-1, and BOTH pitch and
+// roll formulas collapse to atan2(-1, sqrt(2))*180/PI = -35.26 degrees
+// -- a plausible-looking but completely bogus tilt on both axes at
+// once, identical to one decimal place. That's exactly what tripped a
+// tilt-abort mid-sequence with the robot barely leaning at all. This
+// project already has documented I2C noise from the servos coupling
+// into SDA/SCL (see Wire.setWireTimeout() in setup()) -- that protects
+// against the BUS hanging, not against a single short read on top of
+// it, which is what this catches. Callers must check the return value
+// before trusting pitch/roll -- they're left untouched on failure.
+bool readMPU6050(float &pitch, float &roll) {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(ACCEL_XOUT_H);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, 6, true);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(MPU_ADDR, 6, true) < 6) return false;
 
   int16_t AcX = Wire.read() << 8 | Wire.read();
   int16_t AcY = Wire.read() << 8 | Wire.read();
@@ -2455,6 +2478,7 @@ void readMPU6050(float &pitch, float &roll) {
 
   pitch = atan2((float)AcX, sqrt((float)AcY * AcY + (float)AcZ * AcZ)) * 180.0 / PI;
   roll  = atan2((float)AcY, sqrt((float)AcX * AcX + (float)AcZ * AcZ)) * 180.0 / PI;
+  return true;
 }
 
 // Reports whether the body is level, using the MPU6050 as ground
@@ -2465,7 +2489,10 @@ void readMPU6050(float &pitch, float &roll) {
 
 void checkLevel() {
   float pitch, roll;
-  readMPU6050(pitch, roll);
+  if (!readMPU6050(pitch, roll)) { // bad read -- see readMPU6050()'s comment
+    Serial.println(F("IMU read failed -- try again."));
+    return;
+  }
   Serial.print(F("Pitch:")); Serial.print(pitch, 1);
   Serial.print(F("  Roll:")); Serial.print(roll, 1);
   if (fabs(pitch) <= LEVEL_TOLERANCE_DEG && fabs(roll) <= LEVEL_TOLERANCE_DEG) {
@@ -2554,10 +2581,14 @@ void pollTofSensors() {
 // ============================================================
 void printSensors() {
   float pitch, roll;
-  readMPU6050(pitch, roll);
+  bool imuOk = readMPU6050(pitch, roll); // bad read -- see readMPU6050()'s comment
 
-  Serial.print(F("Pitch:")); Serial.print(pitch, 1);
-  Serial.print(F("  Roll:")); Serial.print(roll, 1);
+  if (imuOk) {
+    Serial.print(F("Pitch:")); Serial.print(pitch, 1);
+    Serial.print(F("  Roll:")); Serial.print(roll, 1);
+  } else {
+    Serial.print(F("Pitch:---  Roll:---"));
+  }
 
   if (tof1Active) {
     if (tof1_ok) {

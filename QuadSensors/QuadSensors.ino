@@ -2401,19 +2401,43 @@ void setupMPU6050() {
   Serial.println(F("MPU6050 ready."));
 }
 
-// Returns false on a failed/short I2C read instead of trusting
-// whatever's in the buffer -- confirmed on hardware as a real failure
-// mode, not theoretical: a glitched read leaves Wire.read() returning
-// -1 for every unreceived byte, so AcX=AcY=AcZ=-1, and BOTH pitch and
+// Returns false on a failed/short I2C read, OR a full read that comes
+// back physically implausible, instead of trusting whatever's in the
+// buffer -- both confirmed on hardware as real failure modes, not
+// theoretical.
+//
+// The short-read case: a glitched read leaves Wire.read() returning -1
+// for every unreceived byte, so AcX=AcY=AcZ=-1, and BOTH pitch and
 // roll formulas collapse to atan2(-1, sqrt(2))*180/PI = -35.26 degrees
 // -- a plausible-looking but completely bogus tilt on both axes at
-// once, identical to one decimal place. That's exactly what tripped a
-// tilt-abort mid-sequence with the robot barely leaning at all. This
-// project already has documented I2C noise from the servos coupling
-// into SDA/SCL (see Wire.setWireTimeout() in setup()) -- that protects
-// against the BUS hanging, not against a single short read on top of
-// it, which is what this catches. Callers must check the return value
-// before trusting pitch/roll -- they're left untouched on failure.
+// once, identical to one decimal place. That's what tripped one abort
+// with the robot barely leaning.
+//
+// The full-but-corrupted case: a SEPARATE abort logged pitch=76.6
+// roll=-9.4 (not identical, so not the case above) while the user
+// confirmed there was no real tilt anywhere close to that -- a read
+// that came back as 6 real bytes, just not the RIGHT 6 bytes (e.g. an
+// I2C glitch during the wheel motors' own PWM/current-draw noise,
+// separate from the already-documented servo noise, shifting which
+// byte lands where). ACCEL_CONFIG is never written, so this sensor
+// stays at its power-on default +-2g range (16384 LSB/g) -- whatever
+// orientation the robot is actually in, sqrt(AcX^2+AcY^2+AcZ^2) should
+// sit close to that 1g magnitude (real dynamic motion/vibration can
+// push it off exact 1g, hence the wide band, not a tight one).
+// Corrupted register bytes have no reason to coincidentally reproduce
+// that magnitude, so this catches them without needing to guess a
+// tilt-angle ceiling -- which would risk masking a genuine severe fall
+// (a real fall still reads ~1g, just pointed a different way) instead
+// of just rejecting noise.
+//
+// This project already has documented I2C noise (see
+// Wire.setWireTimeout() in setup()) -- that protects against the bus
+// HANGING, not against either kind of bad read riding on top of it.
+// Callers must check the return value before trusting pitch/roll --
+// they're left untouched on failure.
+#define MPU_ACCEL_LSB_PER_G     16384.0 // power-on default +-2g range, ACCEL_CONFIG never written
+#define MPU_ACCEL_MAG_MIN_G     0.5
+#define MPU_ACCEL_MAG_MAX_G     2.0
 bool readMPU6050(float &pitch, float &roll) {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(ACCEL_XOUT_H);
@@ -2423,6 +2447,9 @@ bool readMPU6050(float &pitch, float &roll) {
   int16_t AcX = Wire.read() << 8 | Wire.read();
   int16_t AcY = Wire.read() << 8 | Wire.read();
   int16_t AcZ = Wire.read() << 8 | Wire.read();
+
+  float magG = sqrt((float)AcX * AcX + (float)AcY * AcY + (float)AcZ * AcZ) / MPU_ACCEL_LSB_PER_G;
+  if (magG < MPU_ACCEL_MAG_MIN_G || magG > MPU_ACCEL_MAG_MAX_G) return false;
 
   pitch = atan2((float)AcX, sqrt((float)AcY * AcY + (float)AcZ * AcZ)) * 180.0 / PI;
   roll  = atan2((float)AcY, sqrt((float)AcX * AcX + (float)AcZ * AcZ)) * 180.0 / PI;

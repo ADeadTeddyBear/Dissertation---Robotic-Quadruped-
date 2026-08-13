@@ -2180,23 +2180,24 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_REVERSE) {
     if (driveActive) return; // still backing away (or timed out -- either way driveActive clears on its own)
-    // Go straight into the knee-safe fold from wherever the sink left
-    // the legs, rather than re-snapping all four back to the verified
-    // platform stance first (what LIFT_REMEASURE_UP does). Confirmed
-    // by the user that this re-snap was unwanted extra motion right
-    // before the approach-drive, for no real benefit: the sunk pose is
-    // only REMEASURE_LOWER_DEG off the verified platform (a small,
-    // already-accepted adjustment, not some separately unstable pose),
-    // and the reactive tilt net's exclusion list already treats this
-    // whole window the same either way (LIFT_REVERSE/LIFT_REMEASURE_UP
-    // are both excluded), so skipping the re-snap costs no safety
-    // coverage. LIFT_REMEASURE_DOWN's OWN fallback path (ToF invalid,
-    // reverse skipped entirely) still goes through the full
-    // createStablePlatform()/LIFT_REMEASURE_UP route below -- that's a
-    // genuinely lower-confidence case where the extra caution still
-    // earns its keep.
-    setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
-    liftState = LIFT_KNEE_SAFE;
+    // REVERTED back to re-snapping through createStablePlatform() --
+    // briefly skipped this (going straight into the knee-safe fold
+    // from the sunk pose) to cut unnecessary leg motion, but confirmed
+    // on hardware that leaving the STANCE legs (FR/RL/RR) sunk for the
+    // rest of FL's sequence changes the chassis geometry enough to
+    // matter: with FL's knee not quite at true 180 (real-world
+    // approach-drive/servo precision, not exactly the margin=0 ideal),
+    // FL only barely clips the step instead of planting on it, and
+    // with the stance legs sitting lower than normal, FR's own wheel
+    // ends up in the way right as that marginal contact happens,
+    // contributing to a slip and a real ~39/21 degree tilt -- close to
+    // the confirmed genuine-fall range. The small-adjustment argument
+    // for skipping this was correct in isolation; it didn't account
+    // for how the OTHER three legs' geometry interacts with a FL
+    // placement that's already only marginally solid. Back to the
+    // verified stance before continuing.
+    createStablePlatform();
+    liftState = LIFT_REMEASURE_UP;
 
   } else if (liftState == LIFT_REMEASURE_UP) {
     {

@@ -3042,7 +3042,21 @@ void startDriveToTof(int speed, float targetMM, unsigned long timeoutMs) {
 
 void updateDrive() {
   if (!driveActive) return;
-  if (driveTofTargetMM >= 0 && tof1_ok) {
+  if (driveTofTargetMM >= 0) {
+    if (!tof1_ok) {
+      // Confirmed on hardware: driving right up close to the step is
+      // exactly where ToF1's reading is most likely to go invalid
+      // (near/past its minimum reliable range) -- this used to fall
+      // straight through to the 8-second hard timeout below with
+      // nothing checking distance in the meantime, so the wheels kept
+      // pushing into the step instead of stopping. Losing the ToF
+      // signal on a targeted drive is itself a reason to stop -- safer
+      // to stop a little early on a noise blip than to keep driving
+      // blind toward an obstacle.
+      Serial.println(F("Drive stopped: ToF1 reading lost mid-drive."));
+      stopWheels();
+      return;
+    }
     if (driveTofApproaching  && tof1_mm <= driveTofTargetMM) { stopWheels(); return; }
     if (!driveTofApproaching && tof1_mm >= driveTofTargetMM) { stopWheels(); return; }
   }

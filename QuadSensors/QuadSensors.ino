@@ -1603,6 +1603,15 @@ bool startLiftSequence(int legToLift) {
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // slow, careful motion for the whole sequence -- reset in abortLiftSequence()
   liftTiltAborted = false;
   liftUsingVerifiedStance = false;
+  // Explicitly cleared here, not just relied on from abortLiftSequence()
+  // -- confirmed on hardware that a stale true from a prior
+  // startSecondLegOntoStep() call can otherwise survive into a fresh
+  // FIRST-leg sequence (any exit path that doesn't happen to route
+  // through abortLiftSequence() leaves it set), silently sending
+  // LIFT_TUCK down the "second leg, no wheel movement" branch for a
+  // leg that was never actually placed yet -- exactly the "never drove
+  // forwards, straight to unreachable" failure reported.
+  liftIsSecondLeg = false;
   liftLegIdx = legToLift;
   int n = 0;
   for (int i = 0; i < NUM_HIPS; i++) {

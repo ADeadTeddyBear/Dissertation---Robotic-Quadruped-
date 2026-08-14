@@ -2032,6 +2032,19 @@ const ClimbPose REAR_RL_LIFT = { 100, 100, 120, 100,  4, 270, 70, 120 }; // RL l
 const ClimbPose REAR_RL_PLACE = {  80, 100, 120,  60, 15, 230, 70, 120 }; // RL placed on the step
 const ClimbPose REAR_RR_PREP = { 140, 140, 120,  80, 30, 235, 50, 160 }; // weight leaned forward, nearly stable, ready to prep lifting RR
 
+// ============================================================
+// REAR KNEE-LURCH START -- a different, newer approach to the rear
+// wheel lift than REAR_RL_LIFT/PLACE/PREP above (that older sequence
+// is left in place, not removed, until this one is confirmed to
+// replace it). Both FL and FR already up on the step, chassis driven
+// forward over it -- the confirmed-stable starting point for the new
+// technique: extending RL's knee alone (not a combined hip+knee move)
+// to deliberately let the body's centre of mass lurch forward, rather
+// than trying to keep the body perfectly controlled/balanced through
+// the whole rear lift the way the older approach did.
+// ============================================================
+const ClimbPose REAR_KNEE_LURCH_START = { 65, 0, 65, 0, 50, 270, 50, 140 }; // both front legs up on the step, confirmed stable, ready to extend RL's knee
+
 bool climbMoveActive = false;
 unsigned long lastClimbTiltCheckMs = 0;
 
@@ -3000,6 +3013,10 @@ void handleCommand(String input) {
     commandClimbPose(REAR_RR_PREP);
     Serial.println(F("Commanding REAR_RR_PREP -- UNTESTED via this automated path, watch closely."));
 
+  } else if (input == "rear_knee_lurch_start") {
+    commandClimbPose(REAR_KNEE_LURCH_START);
+    Serial.println(F("Commanding REAR_KNEE_LURCH_START -- both front legs up on the step, ready for the RL knee-lurch technique. UNTESTED via this automated path, watch closely."));
+
   } else if (input == "sensors") {
     printSensors();
 
@@ -3018,7 +3035,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | rear_knee_lurch_start | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {

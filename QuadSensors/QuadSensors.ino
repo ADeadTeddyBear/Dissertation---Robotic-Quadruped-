@@ -1518,26 +1518,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // ============================================================
 #define PRECLIMB_HIP_FL   92
 #define PRECLIMB_KNEE_FL  100
-#define PRECLIMB_HIP_RL   0
+// RL/RR updated by request from a fresh hand-jogged reading of the
+// stance (FL excluded from that same reading on purpose -- it was
+// deliberately lifted for a test at the time, not representative of
+// the actual safe base stance, so PRECLIMB_HIP_FL/KNEE_FL above are
+// left as their previously-confirmed values).
+#define PRECLIMB_HIP_RL   4
 #define PRECLIMB_KNEE_RL  50
 #define PRECLIMB_HIP_RR   0
-#define PRECLIMB_KNEE_RR  55
-// PRECLIMB_HIP_FR lowered 92->90 by request: FR (as the stance leg
-// during FL's own reach, and as FR's own starting pose before
-// second_fr/raise_rear) was sitting a little too close to the step,
-// leaving too little clearance for FR's own later swing. Same
-// forward-kinematics formula the FL-branch chassis-shift correction
-// above already uses (LEG_THIGH_MM*sin(t1) + LEG_CALF_MM*sin(t1+t2)):
-// at hip=92/knee=108 the foot sits ~271mm forward of the hip; at
-// hip=90 (knee unchanged) that's ~264mm -- about 7mm back. Couples
-// with a small height change too (about 3mm taller at that corner,
-// same t1/t2 math applied to the cos() term) -- not purely isolated
-// like the hip+/knee- cancelling trick elsewhere, but small enough
-// not to matter here. UNVERIFIED against real hardware at this exact
-// value -- if it needs to be more or less than ~7mm, this is the
-// number to adjust.
-#define PRECLIMB_HIP_FR   90
-#define PRECLIMB_KNEE_FR  108
+#define PRECLIMB_KNEE_RR  30
+// PRECLIMB_HIP_FR/KNEE_FR updated by request from the same fresh
+// hand-jogged reading as RL/RR above (90/108 -> 45/170), replacing the
+// earlier small 92->90 adjustment below it superseded.
+#define PRECLIMB_HIP_FR   45
+#define PRECLIMB_KNEE_FR  170
 
 // ============================================================
 // SAFE-KNEE LIFT (FL lift only)

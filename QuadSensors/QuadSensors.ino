@@ -1731,6 +1731,20 @@ bool startSecondLegOntoStep(int legToLift) {
 #define LIFT_TILT_ABORT_DEG 20.0
 #define LIFT_TILT_CHECK_MS  50  // how often to poll the IMU while a sequence is active
 
+// Disabled by explicit request: this net fired on pitch=24.3/roll=3.3
+// mid-approach-drive with no adverse tilt visible on the robot, and
+// the aborts (real and otherwise) were getting in the way more than
+// they were helping. Left as a flag, not deleted -- this same net DID
+// also catch two confirmed genuine near-falls this session (roll=31.8
+// when FR's knee caught the step's lip; pitch=39.3/roll=21.3 when FL's
+// marginal contact slipped), so flip this back to 1 to re-arm it if
+// aborts stop being a nuisance and start being the only thing between
+// the robot and a real fall again. The MPU6050 itself stays fully in
+// use elsewhere for more targeted checks -- the one-shot pre-lift gate
+// in LIFT_SETTLING and the per-step contact detection in LIFT_DESCEND
+// are unaffected by this flag.
+#define LIFT_REACTIVE_TILT_NET_ENABLED 0
+
 // Tighter than LIFT_TILT_ABORT_DEG on purpose: this is the "are we
 // actually stable enough to COMMIT to lifting a leg off the ground"
 // check, not the "is it actively falling over" check -- want to catch
@@ -1962,7 +1976,8 @@ void updateLiftSequence() {
   // every leg still planted/unmoving, the same "expected transient,
   // not a real fall" category as the states above it, not the
   // leg-swinging risk the net exists to catch.
-  if (liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
+  if (LIFT_REACTIVE_TILT_NET_ENABLED &&
+      liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
       liftState != LIFT_RAISING && liftState != LIFT_SHIFTING &&
       liftState != LIFT_SETTLING && liftState != LIFT_REVERSE &&
       liftState != LIFT_REMEASURE_DOWN && liftState != LIFT_REMEASURE_UP) {

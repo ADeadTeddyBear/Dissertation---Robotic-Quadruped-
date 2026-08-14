@@ -2165,21 +2165,11 @@ void updateClimbMoveTracking() {
 // absolute angles for the same reason as PRECLIMB_* above -- the FK/IK
 // model can't be trusted to reproduce or verify this stance itself.
 // ============================================================
-// FR/RL/RR use NEW_STABLE_* here, not PRECLIMB_HIP_FR/RL/RR -- by
-// request, this newer stance (FR's wheel pulled closer to center) has
-// to be in place BEFORE FL's own reach for the step, since that's
-// what actually gives FL the extra clearance. createStablePlatform()
-// is the very first thing FL's own lift sequence does (LIFT_RAISING),
-// so building it in here guarantees the right order automatically --
-// calling new_stable_lift by hand first and then starting FL's lift
-// would otherwise just get silently overwritten right back to the old
-// values the moment this function ran. FL itself is unaffected, still
-// PRECLIMB_HIP_FL/KNEE_FL as before.
 void createStablePlatform() {
-  setHip(FL, PRECLIMB_HIP_FL);   setKnee(FL, PRECLIMB_KNEE_FL);
-  setHip(FR, NEW_STABLE_HIP_FR); setKnee(FR, NEW_STABLE_KNEE_FR);
-  setHip(RL, NEW_STABLE_HIP_RL); setKnee(RL, NEW_STABLE_KNEE_RL);
-  setHip(RR, NEW_STABLE_HIP_RR); setKnee(RR, NEW_STABLE_KNEE_RR);
+  setHip(FL, PRECLIMB_HIP_FL); setKnee(FL, PRECLIMB_KNEE_FL);
+  setHip(FR, PRECLIMB_HIP_FR); setKnee(FR, PRECLIMB_KNEE_FR);
+  setHip(RL, PRECLIMB_HIP_RL); setKnee(RL, PRECLIMB_KNEE_RL);
+  setHip(RR, PRECLIMB_HIP_RR); setKnee(RR, PRECLIMB_KNEE_RR);
   unsigned long dur = 0;
   for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
   for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }

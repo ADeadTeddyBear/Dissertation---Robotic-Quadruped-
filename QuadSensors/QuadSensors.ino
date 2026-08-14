@@ -3102,58 +3102,83 @@ void updateDrive() {
 // rear ever catching up.
 //
 // RL/RR move hip AND knee together, interpolating from wherever they
-// started toward HIP_START/KNEE_START (the same verified "full stand"
-// reference applyStandProgress() itself targets), reaching both at
-// once via a shared progress fraction. NOT knee alone (an earlier
-// version of this): confirmed by request that extending only the knee
-// doesn't actually finish "standing straight down" -- with the hip
-// left parked near PRECLIMB_HIP_RL/RR (close to HIP_MIN) the whole leg
-// was extending along whatever direction that low hip angle already
-// pointed, not truly vertical. Moving both joints toward their own
-// verified stand endpoints together is what "stood all the way up,
-// not allowed past straight down" actually means geometrically.
+// started toward a TARGET HEIGHT (not simply "as far as the leg goes")
+// computed from the real measured step height: rearTargetHeightMM =
+// FL's actual current foot depth (legForwardKinematics(FL,...), the
+// live joint angles -- FL got here via hardcoded step-place angles
+// that never go through applyStandProgress(), so lastCommandedHeight
+// can't be trusted here) + lastDetectedStepHeightMM. This is just
+// "front hip and rear hip end up at the same absolute height": the
+// front foot sits stepHeightMM higher off the ground than the rear
+// foot does, so the rear leg needs to reach exactly that much further
+// (deeper) for the chassis to come out level, not simply reach its own
+// physical maximum. computeRearJointsForHeight() turns that target
+// depth into the matching hip/knee pair, validated against RL/RR's
+// real HIP_MIN/MAX/KNEE_MIN/MAX. Falls back to the old full-stand
+// target (HIP_START/KNEE_START) if there's no valid step estimate to
+// work from, or if the computed target isn't reachable -- never worse
+// than the previous behaviour, just more precise when the data exists.
+// NOT knee alone (an earlier version of this): confirmed by request
+// that extending only the knee doesn't actually finish "standing
+// straight down" -- with the hip left parked near PRECLIMB_HIP_RL/RR
+// (close to HIP_MIN) the whole leg was extending along whatever
+// direction that low hip angle already pointed, not truly vertical.
+// Moving both joints toward their own target endpoint together is what
+// "stood all the way up, not allowed past straight down" actually
+// means geometrically -- now with that endpoint set by the real step
+// height instead of always maxing out, which is also what keeps this
+// from pitching the chassis past level toward the back if the real
+// required height turns out to be less than full leg extension.
 //
-// Stopping condition is LEVEL, not a fixed number of degrees: the
-// front is already up at step height and the rear is still on the
+// Stopping condition is still LEVEL, not a fixed number of degrees:
+// the front is already up at step height and the rear is still on the
 // ground, so pitch starts off-level and should move toward 0 as the
 // rear rises to match -- once |pitch| is within LEVEL_TOLERANCE_DEG,
-// the whole chassis is roughly at step height and this is done.
-// Checking the MAGNITUDE (not a specific signed direction) means this
-// doesn't depend on knowing whether "front high" reads as positive or
-// negative pitch in this code -- it just watches for pitch closing in
-// on zero either way.
+// the whole chassis is roughly at step height and this is done. This
+// IMU check stays the authoritative stop condition (the height target
+// above only changes what the motion aims at, not what decides when to
+// stop) -- checking the MAGNITUDE (not a specific signed direction)
+// means this doesn't depend on knowing whether "front high" reads as
+// positive or negative pitch in this code, it just watches for pitch
+// closing in on zero either way.
 //
 // The front legs extend a little too, by request ("lower the front
 // legs but not too much") -- much slower than the rear and hard
 // capped, since FL/FR are already resting on the step and
 // over-extending them risks lifting a wheel off the step surface.
 //
-// The forward nudge after every single increment is a known
-// placeholder, not a final design. WHEEL_MM_PER_MS_AT_120 below is
-// the real measured number from WheelCalibration/WheelCalibration.ino
-// (FL lifted, other three wheels loaded and driving, at
-// RAISE_REAR_DRIVE_SPEED): observed ~1.5 wheel rotations in 4000ms,
-// i.e. 1.5 * 282.7mm circumference / 4000ms. This still needs the
-// total forward distance the rear should travel during this maneuver
-// (robot wheelbase / how far the rear needs to creep forward to seat
-// on the step) before the per-step nudge can become a small number of
-// precisely-timed drives instead of one blind pulse per step.
+// The forward drive is now a real measured distance, not a blind
+// guess: by request, the total forward travel for this whole maneuver
+// is RAISE_REAR_TOTAL_FORWARD_MM (260mm -- the front wheels sit
+// ~26cm ahead of the chassis once placed on the step, so driving
+// roughly that far brings the majority of the chassis over the step
+// edge). WHEEL_MM_PER_MS_AT_120 is the real measured speed from
+// WheelCalibration/WheelCalibration.ino (FL lifted, other three wheels
+// loaded and driving, at RAISE_REAR_DRIVE_SPEED): observed ~1.5 wheel
+// rotations in 4000ms, i.e. 1.5 * 282.7mm circumference / 4000ms. The
+// total is split evenly across RAISE_REAR_STEPS increments (still the
+// same interleaved step-then-drive-then-settle structure already
+// confirmed to work on hardware) rather than repeating a flat blind
+// guess on every step regardless of how much distance that actually
+// added up to.
 //
-// UNTESTED ON HARDWARE -- this is new territory: the first maneuver
-// that deliberately runs the chassis through a large, sustained pitch
+// UNTESTED ON HARDWARE (the height-target and real-distance changes,
+// on top of the maneuver already being new territory) -- this
+// deliberately runs the chassis through a large, sustained pitch
 // change while driving, with both ends of the robot at different
 // heights the whole time. Watch extremely closely and be ready to
 // catch/support the robot.
 // ============================================================
-#define RAISE_REAR_STEPS               25   // number of increments from wherever RL/RR started to HIP_START/KNEE_START -- fine and incremental, same idea as LIFT_DESCEND_STEPS
+#define RAISE_REAR_STEPS               25   // number of increments from wherever RL/RR started to the computed target height -- fine and incremental, same idea as LIFT_DESCEND_STEPS
 #define RAISE_REAR_FRONT_KNEE_STEP_DEG 0.5  // front legs extend much more slowly -- "not too much"
 #define RAISE_REAR_FRONT_KNEE_MAX_DEG  15.0 // hard cap on total front-knee extension from wherever FL/FR started this sequence
 #define RAISE_REAR_DRIVE_SPEED         120
 #define WHEEL_MM_PER_MS_AT_120         0.106 // measured via WheelCalibration.ino: ~1.5 rotations of FL's wheel (90mm dia, 282.7mm circumference) in 4000ms while driving loaded at speed 120
-#define RAISE_REAR_DRIVE_MS            150  // short forward nudge after each increment
+#define RAISE_REAR_TOTAL_FORWARD_MM    260.0 // measured: front wheels sit ~26cm ahead of the chassis once placed on the step -- by the time raise_rear finishes, most of the chassis should be over the step edge
+#define RAISE_REAR_DRIVE_MS            98   // RAISE_REAR_TOTAL_FORWARD_MM / WHEEL_MM_PER_MS_AT_120 / RAISE_REAR_STEPS = 260 / 0.106 / 25 ~= 98ms -- replaces the old blind flat 150ms-per-step guess
 #define RAISE_REAR_SETTLE_MS           400  // dwell after the drive pulse before trusting the IMU
 #define RAISE_REAR_ROLL_ABORT_DEG      12.0 // roll isn't the axis being intentionally changed here -- tighter than the general LIFT_TILT_ABORT_DEG, any real roll means something is going wrong sideways
-#define RAISE_REAR_MAX_STEPS           80   // hard fallback in case level is never reached (e.g. wheel slip, bad height estimate) -- deliberately well past RAISE_REAR_STEPS, covers extra settle-and-check cycles after RL/RR are already fully standing
+#define RAISE_REAR_MAX_STEPS           80   // hard fallback in case level is never reached (e.g. wheel slip, bad height estimate) -- deliberately well past RAISE_REAR_STEPS, covers extra settle-and-check cycles after RL/RR already reached their target height
 
 // RaiseRearState/raiseRearState are declared near the top of the file
 // (right after driveActive) -- handleCommand()'s drive_stop branch
@@ -3164,6 +3189,13 @@ int   raiseRearRRHipStart = 0, raiseRearRRKneeStart = 0;
 int   raiseRearFrontKneeStartFL = 0, raiseRearFrontKneeStartFR = 0;
 unsigned long raiseRearSettleStartMs = 0;
 
+// Computed once per startRaiseRear() call -- see the block comment
+// above for how these are derived. Default to the old full-stand
+// values so a missing/unreachable step estimate degrades gracefully
+// to the previous behaviour instead of failing outright.
+int raiseRearHipTargetRL = 0, raiseRearKneeTargetRL = 0;
+int raiseRearHipTargetRR = 0, raiseRearKneeTargetRR = 0;
+
 bool startRaiseRear() {
   if (liftState != LIFT_HOLDING) return false; // expects FL (and FR, via second_fr) already down and holding on the step
   if (raiseRearState != RAISE_REAR_IDLE) return false;
@@ -3172,6 +3204,26 @@ bool startRaiseRear() {
   raiseRearRRHipStart = hipPos[RR];   raiseRearRRKneeStart = kneePos[RR];
   raiseRearFrontKneeStartFL = kneePos[FL];
   raiseRearFrontKneeStartFR = kneePos[FR];
+
+  raiseRearHipTargetRL = HIP_START[RL]; raiseRearKneeTargetRL = KNEE_START[RL];
+  raiseRearHipTargetRR = HIP_START[RR]; raiseRearKneeTargetRR = KNEE_START[RR];
+  if (lastDetectedStepValid) {
+    float frontX, frontY;
+    legForwardKinematics(FL, frontX, frontY);
+    float targetRearHeightMM = frontY + lastDetectedStepHeightMM;
+    int hRL, kRL, hRR, kRR;
+    if (computeRearJointsForHeight(RL, targetRearHeightMM, hRL, kRL)) {
+      raiseRearHipTargetRL = hRL; raiseRearKneeTargetRL = kRL;
+    }
+    if (computeRearJointsForHeight(RR, targetRearHeightMM, hRR, kRR)) {
+      raiseRearHipTargetRR = hRR; raiseRearKneeTargetRR = kRR;
+    }
+    Serial.print(F("Raise rear target height: ")); Serial.print(targetRearHeightMM, 0);
+    Serial.println(F("mm (FL's current foot depth + measured step height)."));
+  } else {
+    Serial.println(F("Raise rear: no valid step estimate -- falling back to full-stand target."));
+  }
+
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // careful, slow motion -- matches the rest of the climb sequence
   raiseRearState = RAISE_REAR_STEPPING;
   return true;
@@ -3193,10 +3245,10 @@ void updateRaiseRear() {
     // to call this after reaching full stand just holds there, not
     // overshoots.
     float t = min(1.0, (float)(raiseRearStepCount + 1) / (float)RAISE_REAR_STEPS);
-    int newHipRL  = raiseRearRLHipStart  + (int)round((HIP_START[RL]  - raiseRearRLHipStart)  * t);
-    int newKneeRL = raiseRearRLKneeStart + (int)round((KNEE_START[RL] - raiseRearRLKneeStart) * t);
-    int newHipRR  = raiseRearRRHipStart  + (int)round((HIP_START[RR]  - raiseRearRRHipStart)  * t);
-    int newKneeRR = raiseRearRRKneeStart + (int)round((KNEE_START[RR] - raiseRearRRKneeStart) * t);
+    int newHipRL  = raiseRearRLHipStart  + (int)round((raiseRearHipTargetRL  - raiseRearRLHipStart)  * t);
+    int newKneeRL = raiseRearRLKneeStart + (int)round((raiseRearKneeTargetRL - raiseRearRLKneeStart) * t);
+    int newHipRR  = raiseRearRRHipStart  + (int)round((raiseRearHipTargetRR  - raiseRearRRHipStart)  * t);
+    int newKneeRR = raiseRearRRKneeStart + (int)round((raiseRearKneeTargetRR - raiseRearRRKneeStart) * t);
     setHip(RL, newHipRL);   setKnee(RL, newKneeRL);
     setHip(RR, newHipRR);   setKnee(RR, newKneeRR);
 
@@ -3257,9 +3309,9 @@ void updateRaiseRear() {
       return;
     }
 
-    if (hipPos[RL] >= HIP_START[RL] && kneePos[RL] >= KNEE_START[RL] &&
-        hipPos[RR] >= HIP_START[RR] && kneePos[RR] >= KNEE_START[RR]) {
-      Serial.println(F("Raise rear stopped: rear legs fully standing but chassis still not level -- may need to drive further forward, or the step height estimate is off."));
+    if (hipPos[RL] >= raiseRearHipTargetRL && kneePos[RL] >= raiseRearKneeTargetRL &&
+        hipPos[RR] >= raiseRearHipTargetRR && kneePos[RR] >= raiseRearKneeTargetRR) {
+      Serial.println(F("Raise rear stopped: rear legs reached their target height but chassis still not level -- may need to drive further forward, or the step height estimate is off."));
       stopRaiseRear();
       return;
     }

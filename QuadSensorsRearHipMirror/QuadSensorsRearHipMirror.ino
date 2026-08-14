@@ -1477,6 +1477,12 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // stop can pass a stance that hasn't actually finished moving yet.
 #define LIFT_SETTLE_DWELL_MS 3000
 
+// Deliberate pause between createNewStablePlatform() settling and the
+// leg actually starting to lift (LIFT_PRE_LIFT_PAUSE) -- requested
+// directly, not yet hardware-tuned. Gives the deliberately-tilted
+// stance a moment to fully settle before committing to the lift.
+#define LIFT_PRE_LIFT_PAUSE_MS 2000
+
 // Before lifting/tucking the leg for a step-place, reverse away from
 // the step by this much extra clearance (using the wheels, not the
 // legs) -- creates room for the knee-safe/hip-lift swing to happen
@@ -1679,9 +1685,10 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
+unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
 int liftLegIdx = -1;
 int liftStanceIdx[3];
 float liftStanceX[3], liftStanceY[3]; // stance-leg foot positions before the shift, to restore on lower
@@ -2175,6 +2182,25 @@ void createStablePlatform() {
   for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
 }
 
+// Same as createStablePlatform(), but FR/RL/RR go to NEW_STABLE_*
+// instead of PRECLIMB_HIP_FR/RL/RR -- used ONLY at the
+// LIFT_REVERSE->LIFT_REMEASURE_UP transition (see that state), i.e.
+// specifically "just before lifting the leg", NOT the initial
+// LIFT_RAISING stance (which stays plain createStablePlatform(), "the
+// original standalone sweep stance"). FL unaffected either way, still
+// PRECLIMB_HIP_FL/KNEE_FL. Deliberately tilts the chassis on purpose
+// to help the lift -- see LIFT_PRE_LIFT_PAUSE's exclusion from the
+// reactive tilt net above.
+void createNewStablePlatform() {
+  setHip(FL, PRECLIMB_HIP_FL);   setKnee(FL, PRECLIMB_KNEE_FL);
+  setHip(FR, NEW_STABLE_HIP_FR); setKnee(FR, NEW_STABLE_KNEE_FR);
+  setHip(RL, NEW_STABLE_HIP_RL); setKnee(RL, NEW_STABLE_KNEE_RL);
+  setHip(RR, NEW_STABLE_HIP_RR); setKnee(RR, NEW_STABLE_KNEE_RR);
+  unsigned long dur = 0;
+  for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
+  for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
+}
+
 // Sinks all four legs to get ToF1's beam back below the step's height
 // for a fresh reading, then moves on to LIFT_REMEASURE_DOWN -- see
 // REMEASURE_LOWER_DEG's comment. Called from LIFT_SETTLING for a
@@ -2249,11 +2275,16 @@ void updateLiftSequence() {
   // every leg still planted/unmoving, the same "expected transient,
   // not a real fall" category as the states above it, not the
   // leg-swinging risk the net exists to catch.
+  // LIFT_PRE_LIFT_PAUSE excluded by explicit request: createNewStablePlatform()
+  // (commanded at the LIFT_REVERSE->LIFT_REMEASURE_UP transition, right
+  // before this pause) deliberately tilts the chassis on purpose to
+  // help the upcoming lift -- not something to flag as a fault.
   if (LIFT_REACTIVE_TILT_NET_ENABLED &&
       liftState != LIFT_IDLE && liftState != LIFT_HOLDING &&
       liftState != LIFT_RAISING && liftState != LIFT_SHIFTING &&
       liftState != LIFT_SETTLING && liftState != LIFT_REVERSE &&
-      liftState != LIFT_REMEASURE_DOWN && liftState != LIFT_REMEASURE_UP) {
+      liftState != LIFT_REMEASURE_DOWN && liftState != LIFT_REMEASURE_UP &&
+      liftState != LIFT_PRE_LIFT_PAUSE) {
     if (checkLiftTiltSafety()) return;
   }
 
@@ -2484,7 +2515,15 @@ void updateLiftSequence() {
     // for how the OTHER three legs' geometry interacts with a FL
     // placement that's already only marginally solid. Back to the
     // verified stance before continuing.
-    createStablePlatform();
+    //
+    // createNewStablePlatform(), NOT createStablePlatform() -- by
+    // request, this is specifically "just before lifting the leg", the
+    // one point in the sequence where the newer FR/RL/RR stance
+    // (pulled closer to center) should apply, deliberately tilting the
+    // chassis to help the upcoming lift. The FIRST stance (LIFT_RAISING,
+    // above) stays plain createStablePlatform() -- "the original
+    // standalone sweep stance".
+    createNewStablePlatform();
     liftState = LIFT_REMEASURE_UP;
 
   } else if (liftState == LIFT_REMEASURE_UP) {
@@ -2493,6 +2532,13 @@ void updateLiftSequence() {
       for (int i = 0; i < NUM_HIPS; i++) allDone = allDone && legMoveDone(i);
       if (!allDone) return;
     }
+    // Deliberate pause here before lifting -- requested directly, lets
+    // the deliberately-tilted stance above actually settle first.
+    liftPreLiftPauseStartMs = millis();
+    liftState = LIFT_PRE_LIFT_PAUSE;
+
+  } else if (liftState == LIFT_PRE_LIFT_PAUSE) {
+    if (millis() - liftPreLiftPauseStartMs < LIFT_PRE_LIFT_PAUSE_MS) return;
     setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
     liftState = LIFT_KNEE_SAFE;
 

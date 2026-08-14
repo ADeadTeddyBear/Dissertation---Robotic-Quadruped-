@@ -2908,6 +2908,29 @@ void handleCommand(String input) {
     stopRaiseRear();
     Serial.println(F("Raise rear stopped."));
 
+  } else if (input == "rear_wheel_lift_rl" || input == "rear_wheel_lift_rr") {
+    // See REAR WHEEL LIFT's block comment above -- do NOT use lift_rl/
+    // lift_rr for this, they reset the whole robot's pose and would
+    // undo raise_rear. UNTESTED, no verified rear-leg pose exists for
+    // this stance -- watch extremely closely.
+    int legIdx = (input == "rear_wheel_lift_rl") ? RL : RR;
+    if (startRearWheelLift(legIdx)) {
+      Serial.println(F("Shifting weight before lifting the rear wheel -- UNTESTED, watch extremely closely."));
+    } else {
+      Serial.println(F("Cannot start rear wheel lift (raise_rear not idle, another lift already in progress, or the stability margin from this stance is too low)."));
+    }
+
+  } else if (input == "rear_wheel_lower") {
+    if (startRearWheelLower()) {
+      Serial.println(F("Lowering rear wheel..."));
+    } else {
+      Serial.println(F("No rear wheel currently lifted."));
+    }
+
+  } else if (input == "rear_wheel_stop") {
+    abortRearWheelLift();
+    Serial.println(F("Rear wheel lift stopped -- legs frozen where they are, stance NOT restored (send 'rear_wheel_lower' first if the leg is still up)."));
+
   } else if (input.startsWith("drive ")) {
     String rest = input.substring(6);
     int    sep  = rest.indexOf(' ');
@@ -3373,6 +3396,196 @@ void updateRaiseRear() {
 }
 
 // ============================================================
+// REAR WHEEL LIFT: once raise_rear finishes (chassis level, front on
+// the step, rear extended to match), lift ONE rear wheel (RL or RR)
+// clear of the ground as the next step toward getting it onto the
+// step too.
+//
+// Deliberately NOT built on startLiftSequence()/updateLiftSequence()
+// (lift_fl/fr/rl/rr, step_fl/fr/rl/rr) -- that machinery always begins
+// with startStandMove() (LIFT_RAISING), which drives every joint
+// through the CROUCH_LOW<->HIP_START/KNEE_START stand-progress
+// interpolation regardless of the robot's actual current pose, and for
+// FL specifically calls createStablePlatform() (snaps all four legs to
+// the hardcoded PRECLIMB_* angles). Both would immediately undo
+// raise_rear's work: FL/FR would leave the step and RL/RR would drop
+// out of the height-matched stance raise_rear just achieved. Confirmed
+// by reading through that whole sequence, not assumed -- this is why
+// lift_rl/lift_rr are NOT safe to send after raise_rear, even though
+// they exist and target the right legs.
+//
+// This sequence instead treats WHATEVER POSE THE ROBOT IS CURRENTLY IN
+// as the baseline and only touches the leg being lifted plus a weight
+// shift on the other three -- reusing the same generic
+// stabilityMargin()/findBestStabilityShift()/setFoot() helpers the
+// original sequence's own non-FL branch already uses, just without any
+// of the FL-specific resets.
+//
+// Answers both things asked for directly: "how high we can lift the
+// chassis" is whatever margin findBestStabilityShift() finds for the
+// remaining 3-leg support triangle from THIS stance (rejected below
+// MIN_STABILITY_MARGIN_MM, the same safety floor the front-leg
+// sequence uses) -- it's a stability search, not a fixed number, the
+// same as it already is for any other leg. "How high to lift it" is
+// REAR_WHEEL_LIFT_MM, the vertical clearance the foot rises once
+// tucked.
+//
+// This is a PLAIN LIFT-AND-HOLD only -- clear of the ground, not yet a
+// full reach onto the step. Getting it actually onto the step is a
+// deliberate follow-up once this simpler piece is confirmed on
+// hardware, the same incremental-trust approach as every other new
+// maneuver in this file (raise_rear itself was built the same way).
+//
+// UNTESTED ON HARDWARE, more so than most here: no rear-leg pose data
+// exists for this stance at all (unlike FL's extensively hand-tuned
+// PRECLIMB/LIFT_SAFE_KNEE/LIFT_LIFTED_HIP constants -- those took many
+// rounds of real testing to arrive at). This uses solveLegIK()'s
+// general solve directly for RL/RR, which the rest of this file has
+// repeatedly found unreliable at LARGE angles -- but the starting pose
+// here (near vertical, close to HIP_START/KNEE_START, the small-angle
+// regime the IK derivation actually assumes) is a different, more
+// favorable situation than the earlier documented failures (which
+// happened from PRECLIMB_HIP_RL/RR's far-off-vertical, near-HIP_MIN
+// starting angles) -- a reasoned starting point, not a verified one.
+// Watch extremely closely and be ready to catch/support the robot.
+// ============================================================
+#define REAR_WHEEL_LIFT_MM       30.0 // vertical clearance once tucked -- matches LEG_LIFT_MM's own reasoning, conservative, not a step reach yet
+#define REAR_LIFT_SETTLE_MS      3000 // same dwell as LIFT_SETTLE_DWELL_MS -- let the shift physically settle before trusting the IMU
+#define REAR_LIFT_TILT_LIMIT_DEG 8.0  // same as LIFT_PRELIFT_TILT_LIMIT_DEG -- commit gate before actually lifting
+
+enum RearLiftState { REAR_LIFT_IDLE, REAR_LIFT_SHIFTING, REAR_LIFT_SETTLING, REAR_LIFT_RAISING, REAR_LIFT_HOLDING, REAR_LIFT_LOWERING, REAR_LIFT_UNSHIFTING };
+RearLiftState rearLiftState = REAR_LIFT_IDLE;
+int   rearLiftLegIdx = -1;
+int   rearLiftStanceIdx[3];
+float rearLiftStanceX[3], rearLiftStanceY[3]; // stance-leg foot positions before the shift, to restore on lower
+float rearLiftOrigX = 0, rearLiftOrigY = 0;   // the lifted leg's own foot position before the shift, to restore on lower
+unsigned long rearLiftSettleStartMs = 0;
+
+bool startRearWheelLift(int legToLift) {
+  if (legToLift != RL && legToLift != RR) return false;
+  if (rearLiftState != REAR_LIFT_IDLE) return false;
+  if (liftState != LIFT_IDLE) return false;       // don't fight the other (FL/FR) lift machinery if it's somehow active
+  if (raiseRearState != RAISE_REAR_IDLE) return false; // let raise_rear finish first
+
+  rearLiftLegIdx = legToLift;
+  int n = 0;
+  for (int i = 0; i < NUM_HIPS; i++) {
+    if (i == legToLift) continue;
+    rearLiftStanceIdx[n] = i;
+    n++;
+  }
+  legForwardKinematics(legToLift, rearLiftOrigX, rearLiftOrigY);
+  for (int k = 0; k < 3; k++) legForwardKinematics(rearLiftStanceIdx[k], rearLiftStanceX[k], rearLiftStanceY[k]);
+
+  float bx[3], by[3];
+  for (int k = 0; k < 3; k++) footBodyPosition(rearLiftStanceIdx[k], bx[k], by[k]);
+  float bestShift, bestMargin;
+  findBestStabilityShift(bx, by, rearLiftStanceX, rearLiftStanceY, bestShift, bestMargin);
+  if (bestMargin < MIN_STABILITY_MARGIN_MM) {
+    Serial.print(F("Rear wheel lift rejected: best achievable stability margin is "));
+    Serial.print(bestMargin, 0);
+    Serial.print(F("mm, below the ")); Serial.print(MIN_STABILITY_MARGIN_MM, 0);
+    Serial.println(F("mm safety floor -- not attempting from this stance."));
+    return false;
+  }
+
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE;
+  for (int k = 0; k < 3; k++) {
+    int i = rearLiftStanceIdx[k];
+    if (!setFoot(i, rearLiftStanceX[k] - bestShift, rearLiftStanceY[k])) {
+      Serial.println(F("Rear wheel lift aborted: weight-shift target unreachable."));
+      moveSpeedScale = 1.0;
+      return false;
+    }
+  }
+  rearLiftState = REAR_LIFT_SHIFTING;
+  return true;
+}
+
+// Freezes every leg this sequence touched exactly where it currently
+// is (same freezeLeg() pattern checkLiftTiltSafety() uses) before
+// resetting state -- an immediate stop, not "let whatever move is in
+// flight finish".
+void abortRearWheelLift() {
+  if (rearLiftLegIdx != -1) {
+    freezeLeg(rearLiftLegIdx);
+    for (int k = 0; k < 3; k++) freezeLeg(rearLiftStanceIdx[k]);
+  }
+  rearLiftState = REAR_LIFT_IDLE;
+  rearLiftLegIdx = -1;
+  moveSpeedScale = 1.0;
+}
+
+bool startRearWheelLower() {
+  if (rearLiftState != REAR_LIFT_HOLDING) return false;
+  if (!setFoot(rearLiftLegIdx, rearLiftOrigX, rearLiftOrigY)) return false;
+  rearLiftState = REAR_LIFT_LOWERING;
+  return true;
+}
+
+void updateRearWheelLift() {
+  if (rearLiftState == REAR_LIFT_IDLE) return;
+
+  if (rearLiftState == REAR_LIFT_SHIFTING) {
+    for (int k = 0; k < 3; k++) if (!legMoveDone(rearLiftStanceIdx[k])) return;
+    rearLiftSettleStartMs = millis();
+    rearLiftState = REAR_LIFT_SETTLING;
+
+  } else if (rearLiftState == REAR_LIFT_SETTLING) {
+    if (millis() - rearLiftSettleStartMs < REAR_LIFT_SETTLE_MS) return;
+
+    float ax, ay, bx2, by2, cx, cy;
+    footBodyPosition(rearLiftStanceIdx[0], ax, ay);
+    footBodyPosition(rearLiftStanceIdx[1], bx2, by2);
+    footBodyPosition(rearLiftStanceIdx[2], cx, cy);
+    float settledMargin = stabilityMargin(0, 0, ax, ay, bx2, by2, cx, cy);
+    if (settledMargin < MIN_STABILITY_MARGIN_MM) {
+      Serial.print(F("Rear wheel lift aborted: settled stability margin is "));
+      Serial.print(settledMargin, 0);
+      Serial.println(F("mm after shifting -- below the safety floor, not lifting."));
+      abortRearWheelLift();
+      return;
+    }
+    float pitch, roll;
+    if (!readMPU6050(pitch, roll)) return; // bad read -- retry next tick rather than acting on garbage
+    if (fabs(pitch) > REAR_LIFT_TILT_LIMIT_DEG || fabs(roll) > REAR_LIFT_TILT_LIMIT_DEG) {
+      Serial.print(F("Rear wheel lift aborted: body tilt pitch="));
+      Serial.print(pitch, 1); Serial.print(F(" roll=")); Serial.print(roll, 1);
+      Serial.println(F(" already exceeds the pre-lift check -- not safe to lift from this stance."));
+      abortRearWheelLift();
+      return;
+    }
+
+    if (!setFoot(rearLiftLegIdx, rearLiftOrigX, rearLiftOrigY - REAR_WHEEL_LIFT_MM)) {
+      Serial.println(F("Rear wheel lift aborted: lift target unreachable."));
+      abortRearWheelLift();
+      return;
+    }
+    rearLiftState = REAR_LIFT_RAISING;
+
+  } else if (rearLiftState == REAR_LIFT_RAISING) {
+    if (!legMoveDone(rearLiftLegIdx)) return;
+    moveSpeedScale = 1.0;
+    rearLiftState = REAR_LIFT_HOLDING;
+    Serial.print(F("Rear wheel ")); Serial.print(rearLiftLegIdx == RL ? "RL" : "RR");
+    Serial.println(F(" lifted and holding. Send 'rear_wheel_lower' to set it back down."));
+
+  } else if (rearLiftState == REAR_LIFT_LOWERING) {
+    if (!legMoveDone(rearLiftLegIdx)) return;
+    for (int k = 0; k < 3; k++) {
+      int i = rearLiftStanceIdx[k];
+      setFoot(i, rearLiftStanceX[k], rearLiftStanceY[k]);
+    }
+    rearLiftState = REAR_LIFT_UNSHIFTING;
+
+  } else if (rearLiftState == REAR_LIFT_UNSHIFTING) {
+    for (int k = 0; k < 3; k++) if (!legMoveDone(rearLiftStanceIdx[k])) return;
+    Serial.println(F("Rear wheel lowered, stance restored."));
+    abortRearWheelLift();
+  }
+}
+
+// ============================================================
 // SQUARE-UP: turn in place until ToF1 and ToF2 agree, meaning the
 // robot is perpendicular to whatever flat face is ahead (the step).
 // ToF1 sits toward the left, ToF2 toward the right (both centre-
@@ -3670,6 +3883,9 @@ void loop() {
 
   // Step any in-progress rear-raise (extend RL/RR toward level) forward
   updateRaiseRear();
+
+  // Step any in-progress rear-wheel lift (RL/RR clear of the ground) forward
+  updateRearWheelLift();
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

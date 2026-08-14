@@ -1956,6 +1956,30 @@ const ClimbPose CLIMB_LIFT_MID  = { 200, 100,  88, 108,   0,  50,   0,  48 }; //
 const ClimbPose CLIMB_PREP_TALL = { 150, 270,  60, 150,   0,  80,   0,  80 }; // Pitch  2.0 Roll 0.8 -> Level (FL knee in a "safe spot", not yet extended)
 const ClimbPose CLIMB_LIFT_TALL = { 150, 145,  60, 150,   0,  80,   0,  80 }; // Pitch  2.8 Roll 1.1 -> Level (FL knee swings to fully extended)
 
+// ============================================================
+// REAR RR PREP (three-stage, hand-confirmed) -- picks up AFTER FL and
+// FR are already placed on the step (via auto step placement +
+// second_fr) and the chassis has driven forward over the step. Gets
+// RL lifted, then placed on the step, then leans the whole stance
+// forward into the confirmed-stable stance for prepping RR (the last
+// wheel) to lift -- three separate hand-verified checkpoints, run one
+// at a time (same reasoning as CLIMB_PREP/CLIMB_LIFT being separate
+// commands, not auto-chained): check stability after each before
+// sending the next, rather than one blind combined jump through all
+// three.
+//
+// These are the exact angles reported from hand-jogging on real
+// hardware. The POSES themselves are hand-confirmed; running them via
+// commandClimbPose() (one combined synced move per stage, with the
+// same tilt-abort net CLIMB_PREP/LIFT use) is NOT the same path as the
+// many small manual jogs that found them -- UNTESTED via this
+// automated path specifically. Watch closely, especially the first
+// time through each stage.
+// ============================================================
+const ClimbPose REAR_RL_LIFT = { 100, 100, 120, 100,  4, 270, 70, 120 }; // RL lifted clear, confirmed safe stance
+const ClimbPose REAR_RL_PLACE = {  80, 100, 120,  60, 15, 230, 70, 120 }; // RL placed on the step
+const ClimbPose REAR_RR_PREP = { 140, 140, 120,  80, 30, 235, 50, 160 }; // weight leaned forward, nearly stable, ready to prep lifting RR
+
 bool climbMoveActive = false;
 unsigned long lastClimbTiltCheckMs = 0;
 
@@ -2912,6 +2936,18 @@ void handleCommand(String input) {
     commandClimbPose(CLIMB_LIFT_TALL);
     Serial.println(F("Commanding CLIMB_LIFT_TALL."));
 
+  } else if (input == "rear_rl_lift") {
+    commandClimbPose(REAR_RL_LIFT);
+    Serial.println(F("Commanding REAR_RL_LIFT -- UNTESTED via this automated path, watch closely."));
+
+  } else if (input == "rear_rl_place") {
+    commandClimbPose(REAR_RL_PLACE);
+    Serial.println(F("Commanding REAR_RL_PLACE -- UNTESTED via this automated path, watch closely."));
+
+  } else if (input == "rear_rr_prep") {
+    commandClimbPose(REAR_RR_PREP);
+    Serial.println(F("Commanding REAR_RR_PREP -- UNTESTED via this automated path, watch closely."));
+
   } else if (input == "sensors") {
     printSensors();
 
@@ -2930,7 +2966,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {

@@ -1386,8 +1386,18 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // the flat surface. 70 is deliberately more than a full wheel
 // diameter (~90mm) short of that, so the axle itself ends up
 // meaningfully past the edge, not just the wheel's leading point.
-// UNTESTED at this exact value.
-#define STEP_LANDING_DEPTH_MM 70.0
+//
+// Brought back down 70->40 by explicit request: 40mm of wheel on the
+// step is the target depth, not a step along the way to something
+// bigger -- keeps the approach-drive less aggressive (less distance
+// to close blind) while still meaningfully past the edge. This does
+// NOT reopen the "barely touching the corner" problem 40 caused
+// before that prompted the 70 raise -- that was 40mm of OVERSHOOT
+// PAST THE EDGE with the earlier (buggy) approach-drive math; the
+// approach-drive itself has had real fixes since (ToF-invalid-stop,
+// liftIsSecondLeg reset, the createStablePlatform() revert) that
+// weren't in place when 40 first failed.
+#define STEP_LANDING_DEPTH_MM 40.0
 
 // The final descent onto the step used to be one commanded move
 // straight to the nominal target Y (lastCommandedHeight -

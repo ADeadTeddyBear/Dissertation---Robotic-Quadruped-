@@ -1762,13 +1762,30 @@ bool startSecondLegOntoStep(int legToLift) {
   liftIsSecondLeg = true;
   liftUsingVerifiedStance = true;
   liftLegIdx = legToLift;
-  // FR folds toward SECOND_FR_SAFE_KNEE (away from FL/the step) instead
-  // of LIFT_SAFE_KNEE_FR (270, toward them) -- see that constant's
-  // comment. FL (the other possible legToLift here, if a future
-  // second_fl is added) keeps the original direction; nothing about FL
-  // placing next to an already-held FR has been flagged as a problem.
-  setKnee(liftLegIdx, (legToLift == FR) ? SECOND_FR_SAFE_KNEE : LIFT_SAFE_KNEE_FL);
-  liftState = LIFT_KNEE_SAFE;
+  if (legToLift == FR) {
+    // FR moves hip and knee SIMULTANEOUSLY here, not knee-first-then-
+    // hip like the general LIFT_KNEE_SAFE path below. Confirmed on
+    // hardware: folding the knee down to SECOND_FR_SAFE_KNEE FIRST,
+    // while the hip is still down at its step-place angle, dips the
+    // foot/wheel toward the ground before the hip ever gets a chance
+    // to lift it clear -- catching the step's underside on the way
+    // through ("gripped the bottom of the step"). Commanding both at
+    // once blends the path instead of dipping through that low point.
+    // Skips LIFT_KNEE_SAFE entirely and goes straight to LIFT_TUCK --
+    // legMoveDone() already waits for BOTH hip and knee regardless of
+    // whether they were commanded together or in sequence, so this is
+    // still a safe wait, just not an artificially staged one.
+    setKnee(liftLegIdx, SECOND_FR_SAFE_KNEE);
+    setHip(liftLegIdx, LIFT_LIFTED_HIP_FR);
+    liftState = LIFT_TUCK;
+  } else {
+    // FL (the other possible legToLift here, if a future second_fl is
+    // added) keeps the original knee-first-then-hip sequencing --
+    // nothing about FL placing next to an already-held FR has been
+    // flagged as a problem.
+    setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
+    liftState = LIFT_KNEE_SAFE;
+  }
   return true;
 }
 

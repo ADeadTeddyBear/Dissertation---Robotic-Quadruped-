@@ -1598,7 +1598,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // target, unchanged here) is the next thing to raise.
 #define SECOND_FR_SAFE_KNEE 0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
+// Peak hip angle for second_fr's tuck (replaces LIFT_LIFTED_HIP_FR for
+// this maneuver specifically -- LIFT_LIFTED_HIP_FR itself is untouched,
+// still used by FR's plain lift/first-leg step place). Confirmed on
+// hardware that 150 wasn't high enough: the knee's subsequent extend
+// (see LIFT_FR_RISE/LIFT_FR_EXTEND below) was happening while the foot
+// was still only at step-face height, so the extending foot pushed
+// straight into the step's front face and shoved the robot off it,
+// instead of swinging over the top. Raising this peak first, before
+// the knee ever extends, is what gives the extend phase clearance
+// above the step's height. Tune this higher if the push recurs.
+#define SECOND_FR_HIP_PEAK 200
+
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 int liftLegIdx = -1;
@@ -1617,6 +1629,15 @@ float liftDescendStartY = 0, liftDescendEndY = 0;
 int liftDescendStepIdx = 0;
 float liftDescendBasePitch = 0, liftDescendBaseRoll = 0;
 bool liftDescendStoppedEarly = false;
+
+// second_fr's own reach target, solved once in LIFT_FR_RISE and reused
+// by LIFT_FR_EXTEND/LIFT_FR_DESCEND -- see those states' comments.
+// Reuses liftDescendStepIdx/liftDescendBasePitch/liftDescendBaseRoll/
+// liftDescendStoppedEarly above for its own incremental contact-check
+// in LIFT_FR_DESCEND (that bookkeeping is idle at the same time this
+// path runs, since second_fr never goes through the normal LIFT_CLEAR/
+// LIFT_DESCEND states).
+int secondFrFinalHip = 0, secondFrFinalKnee = 0;
 
 // Returns to idle from anywhere in the sequence (abort or success) --
 // centralizing this so moveSpeedScale can never be left slow after
@@ -1771,13 +1792,23 @@ bool startSecondLegOntoStep(int legToLift) {
     // to lift it clear -- catching the step's underside on the way
     // through ("gripped the bottom of the step"). Commanding both at
     // once blends the path instead of dipping through that low point.
-    // Skips LIFT_KNEE_SAFE entirely and goes straight to LIFT_TUCK --
-    // legMoveDone() already waits for BOTH hip and knee regardless of
-    // whether they were commanded together or in sequence, so this is
-    // still a safe wait, just not an artificially staged one.
+    //
+    // Targets SECOND_FR_HIP_PEAK (200), not LIFT_LIFTED_HIP_FR (150) --
+    // see that constant's comment. From here this does NOT go through
+    // the normal LIFT_TUCK->LIFT_CLEAR->LIFT_DESCEND path (that path's
+    // setFoot() reach moves hip and knee together via IK, which is what
+    // let the knee start extending before the hip had actually cleared
+    // the step -- confirmed on hardware as the cause of the push-off).
+    // Instead: LIFT_FR_RISE (this simultaneous tuck-and-rise) ->
+    // LIFT_FR_EXTEND (knee alone reaches forward, hip held at the
+    // peak) -> LIFT_FR_DESCEND (hip alone lowers the foot onto the
+    // step, knee held) -- three single-joint moves instead of one
+    // combined IK move, so the knee never extends until the hip has
+    // already cleared, and the final descent never moves the knee at
+    // all once it's already reaching over the step.
     setKnee(liftLegIdx, SECOND_FR_SAFE_KNEE);
-    setHip(liftLegIdx, LIFT_LIFTED_HIP_FR);
-    liftState = LIFT_TUCK;
+    setHip(liftLegIdx, SECOND_FR_HIP_PEAK);
+    liftState = LIFT_FR_RISE;
   } else {
     // FL (the other possible legToLift here, if a future second_fl is
     // added) keeps the original knee-first-then-hip sequencing --
@@ -2459,6 +2490,67 @@ void updateLiftSequence() {
       ? "Foot placed on step (stopped early: contact detected via tilt before reaching the full nominal descent)."
       : "Foot placed on step.");
     liftState = LIFT_HOLDING;
+
+  } else if (liftState == LIFT_FR_RISE) {
+    if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together
+    // Solve the real final target ONCE here -- same geometry the
+    // normal LIFT_CLEAR/LIFT_DESCEND path already uses
+    // (liftStepForwardMM, lastCommandedHeight - liftStepHeightMM), just
+    // solved directly instead of via setFoot() so the hip/knee values
+    // can be driven one at a time instead of together.
+    float targetHip, targetKnee;
+    int forceBranch = 0; // same fixed elbow branch LIFT_TUCK/LIFT_DESCEND force for FL/FR
+    if (!solveLegIK(liftLegIdx, liftStepForwardMM, lastCommandedHeight - liftStepHeightMM, targetHip, targetKnee, forceBranch)) {
+      Serial.println(F("second_fr aborted: final step target unreachable."));
+      abortLiftSequence();
+      return;
+    }
+    secondFrFinalHip  = (int)round(targetHip);
+    secondFrFinalKnee = (int)round(targetKnee);
+    // Knee alone extends from here -- hip stays at SECOND_FR_HIP_PEAK,
+    // already above the step's height, so the extending foot swings
+    // over the top instead of into the step's front face.
+    setKnee(liftLegIdx, secondFrFinalKnee);
+    liftState = LIFT_FR_EXTEND;
+
+  } else if (liftState == LIFT_FR_EXTEND) {
+    if (!legMoveDone(liftLegIdx)) return; // knee still extending, hip held at the peak
+    // Now lower the hip ALONE onto the step, knee held at
+    // secondFrFinalKnee -- same incremental contact-check as
+    // LIFT_DESCEND (reusing its bookkeeping vars), just driving hip
+    // only instead of a combined setFoot() move.
+    liftDescendStepIdx = 0;
+    liftDescendStoppedEarly = false;
+    if (!readMPU6050(liftDescendBasePitch, liftDescendBaseRoll)) return;
+    liftState = LIFT_FR_DESCEND;
+
+  } else if (liftState == LIFT_FR_DESCEND) {
+    if (!legMoveDone(liftLegIdx)) return;
+
+    if (liftDescendStepIdx > 0) {
+      float pitch, roll;
+      if (!readMPU6050(pitch, roll)) return;
+      if (fabs(pitch - liftDescendBasePitch) > LIFT_CONTACT_TILT_DELTA_DEG ||
+          fabs(roll - liftDescendBaseRoll) > LIFT_CONTACT_TILT_DELTA_DEG) {
+        liftDescendStoppedEarly = (liftDescendStepIdx < LIFT_DESCEND_STEPS);
+        Serial.println(liftDescendStoppedEarly
+          ? "Foot placed on step (stopped early: contact detected via tilt before reaching the full nominal descent)."
+          : "Foot placed on step.");
+        liftState = LIFT_HOLDING;
+        return;
+      }
+    }
+
+    if (liftDescendStepIdx >= LIFT_DESCEND_STEPS) {
+      Serial.println(F("Foot placed on step."));
+      liftState = LIFT_HOLDING;
+      return;
+    }
+
+    liftDescendStepIdx++;
+    float t = (float)liftDescendStepIdx / (float)LIFT_DESCEND_STEPS;
+    int stepHip = SECOND_FR_HIP_PEAK + (int)round((secondFrFinalHip - SECOND_FR_HIP_PEAK) * t);
+    setHip(liftLegIdx, stepHip);
 
   } else if (liftState == LIFT_RISE) {
     if (!legMoveDone(liftLegIdx)) return; // settling into the safe lifted pose

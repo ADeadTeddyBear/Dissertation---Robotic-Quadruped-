@@ -51,6 +51,7 @@ bool          driveActive = false;
 unsigned long driveStopAtMs = 0;
 float         driveTofTargetMM = -1; // -1 = plain timed drive, no ToF stop condition
 bool          driveTofApproaching = false; // true: stop once tof1_mm <= target (closing in); false: stop once tof1_mm >= target (backing away)
+float         driveTofStartMM = -1; // ToF1 reading at the moment a ToF-guided drive started -- see DRIVE_TOF_AWAY_JUMP_MM below
 
 // Same reason again: handleCommand()'s drive_stop branch (well above
 // the RAISE REAR section that normally defines this) needs to read
@@ -3378,6 +3379,7 @@ void stopWheels() {
   setWheelSpeeds(0);
   driveActive = false;
   driveTofTargetMM = -1;
+  driveTofStartMM = -1;
 }
 
 // Starts driving at speed (-255..255) for durationMs, then auto-stops
@@ -3408,6 +3410,23 @@ void startDrive(int speed, unsigned long durationMs) {
 // timeoutMs is a hard safety fallback (same mechanism as the plain
 // timed drive) in case the reading is invalid or never reaches the
 // target -- always stops by then regardless of what ToF1 says.
+//
+// DRIVE_TOF_AWAY_JUMP_MM (see updateDrive()) catches a DIFFERENT
+// failure than tof1_ok going false: confirmed on hardware that
+// approaching a step can make the reading jump FARTHER away mid-drive
+// while still reporting "valid" (tof1_ok stays true) -- the beam
+// likely lands on something behind/past the step's near edge instead
+// of the face itself once close enough. That reading never satisfies
+// the stop condition (which needs it to keep DECREASING), so the
+// wheels kept driving blind and hit the step for real -- confirmed:
+// re-measured distance was 318mm right before the drive, but read
+// 367mm (further away) once it stopped, well past the 320mm target,
+// with the robot already against the step. A reading during a forward
+// approach should only ever get smaller, never jump meaningfully
+// larger -- treating a large jump the same as an invalid reading
+// (stop immediately) catches this the same way the tof1_ok check
+// already catches the sensor going fully blind.
+#define DRIVE_TOF_AWAY_JUMP_MM 30.0
 void startDriveToTof(int speed, float targetMM, unsigned long timeoutMs) {
   if (squareState != SQUARE_IDLE) {
     Serial.println(F("Cannot drive: square-up is in progress."));
@@ -3418,6 +3437,7 @@ void startDriveToTof(int speed, float targetMM, unsigned long timeoutMs) {
   driveStopAtMs = millis() + timeoutMs;
   driveTofTargetMM = targetMM;
   driveTofApproaching = (speed > 0);
+  driveTofStartMM = tof1_ok ? (float)tof1_mm : -1;
 }
 
 void updateDrive() {
@@ -3436,6 +3456,21 @@ void updateDrive() {
       Serial.println(F("Drive stopped: ToF1 reading lost mid-drive."));
       stopWheels();
       return;
+    }
+    // See DRIVE_TOF_AWAY_JUMP_MM's comment -- a "valid" reading that
+    // jumps meaningfully farther away than where the drive started is
+    // just as untrustworthy as tof1_ok going false, and confirmed on
+    // hardware to otherwise drive straight through into the step
+    // without ever satisfying the stop condition below.
+    if (driveTofStartMM >= 0) {
+      float awayFromStart = driveTofApproaching ? ((float)tof1_mm - driveTofStartMM) : (driveTofStartMM - (float)tof1_mm);
+      if (awayFromStart > DRIVE_TOF_AWAY_JUMP_MM) {
+        Serial.print(F("Drive stopped: ToF1 reading jumped "));
+        Serial.print(awayFromStart, 0);
+        Serial.println(F("mm further away mid-drive (likely seeing past the target) -- stopping as a precaution."));
+        stopWheels();
+        return;
+      }
     }
     if (driveTofApproaching  && tof1_mm <= driveTofTargetMM) { stopWheels(); return; }
     if (!driveTofApproaching && tof1_mm >= driveTofTargetMM) { stopWheels(); return; }

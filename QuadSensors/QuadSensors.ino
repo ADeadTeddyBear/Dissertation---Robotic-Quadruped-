@@ -1483,6 +1483,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_APPROACH_SPEED           150
 #define LIFT_APPROACH_TIMEOUT_MS      8000
 
+// ESTIMATE, not a real calibration: linearly scaled from the actual
+// measured WHEEL_MM_PER_MS_AT_120 (0.106mm/ms, see WheelCalibration.ino
+// / the RAISE REAR section) by PWM ratio (150/120), since no real
+// wheel-calibration run exists at LIFT_APPROACH_SPEED specifically. DC
+// motor speed isn't perfectly linear with PWM (stall/deadband at low
+// values, diminishing returns near max), so this is a starting guess,
+// not a hardware-confirmed number -- if the approach drive under- or
+// overshoots, a real WheelCalibration.ino-style run at speed 150 is
+// what should replace it. Used by LIFT_TUCK's approach-drive (see
+// that state) now that ToF1 can no longer see the step once the
+// pre-lift stance change tilts the chassis away from it.
+#define WHEEL_MM_PER_MS_AT_APPROACH 0.1325
+
 // How far (degrees) to sink all four legs, right after the stable
 // platform settles and before the actual lift begins, to re-measure
 // the step's forward distance with a fresh, LIVE ToF1 reading instead
@@ -2542,13 +2555,34 @@ void updateLiftSequence() {
       // the overshoot past the step's real edge. Remeasuring afterward
       // and using that raw distance instead would cancel the depth
       // back out.
+      //
+      // lastKnownForwardMM captured BEFORE liftStepForwardMM gets
+      // overwritten below -- it's the real ToF-measured distance from
+      // LIFT_REMEASURE_DOWN, already corrected for the LIFT_REVERSE
+      // backup (see that state's comment). Needed now because ToF1 no
+      // longer has a usable view of the step from here: the pre-lift
+      // stance change (createNewStablePlatform()) tilts the chassis on
+      // purpose, and FL itself has since lifted -- both move ToF1's
+      // aim off the step. Confirmed on hardware: with the old
+      // ToF-guided drive, the reading jumped 100+mm within the very
+      // first tick, not just near the step -- no live signal left to
+      // steer by here. This is now a computed, timed drive from the
+      // last GOOD measurement instead (see WHEEL_MM_PER_MS_AT_APPROACH
+      // for the speed estimate this relies on).
+      float lastKnownForwardMM = liftStepForwardMM - STEP_LANDING_DEPTH_MM;
       liftStepForwardMM = targetForwardMM;
       float driveStopMM = targetForwardMM - STEP_LANDING_DEPTH_MM;
+      float approachDistanceMM = lastKnownForwardMM - driveStopMM;
+      unsigned long approachDriveMs = (approachDistanceMM > 0)
+        ? (unsigned long)round(approachDistanceMM / WHEEL_MM_PER_MS_AT_APPROACH)
+        : 0;
       Serial.print(F("Targeting ")); Serial.print(targetForwardMM, 0);
       Serial.print(F("mm forward (near-max reach) -- closing the gap on the wheels to "));
       Serial.print(driveStopMM, 0);
-      Serial.println(F("mm so the reach overshoots the step's edge, not just touches it."));
-      startDriveToTof(LIFT_APPROACH_SPEED, driveStopMM - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
+      Serial.print(F("mm, estimated ")); Serial.print(approachDistanceMM, 0);
+      Serial.print(F("mm / ")); Serial.print(approachDriveMs);
+      Serial.println(F("ms (timed -- ToF1 no longer faces the step from this stance)."));
+      startDrive(LIFT_APPROACH_SPEED, approachDriveMs);
       liftState = LIFT_APPROACH;
     } else if (liftIsStepPlace) {
       // Second leg: no wheel movement, no retargeting -- liftStepForwardMM
@@ -2568,13 +2602,19 @@ void updateLiftSequence() {
     // it with wherever the drive actually stopped would cancel that
     // depth back out, landing right back at the edge. This poll is
     // diagnostic only, to see how close the drive actually got.
+    // The drive is now timed, not ToF-guided (see LIFT_TUCK's comment
+    // -- ToF1 no longer faces the step from this stance), so this
+    // reading is no longer a meaningful "how close did it actually
+    // get" check the way it used to be when the drive itself used
+    // live ToF1 feedback. Left purely informational, not acted on
+    // either way -- liftStepForwardMM stays the fixed reach target
+    // regardless of what this prints.
     pollTofSensors();
     if (tof1_ok) {
-      Serial.print(F("Approach complete: ")); Serial.print((float)tof1_mm + TOF1_FORWARD_OFFSET_MM, 0);
-      Serial.print(F("mm forward now (drive target was ")); Serial.print(liftStepForwardMM - STEP_LANDING_DEPTH_MM, 0);
-      Serial.println(F("mm)."));
+      Serial.print(F("Approach drive complete (timed). ToF1 now reads ")); Serial.print((float)tof1_mm + TOF1_FORWARD_OFFSET_MM, 0);
+      Serial.println(F("mm -- not meaningful here, ToF1 isn't aimed at the step from this stance."));
     } else {
-      Serial.println(F("Approach: ToF1 reading invalid -- proceeding on the fixed target anyway."));
+      Serial.println(F("Approach drive complete (timed). ToF1 reading invalid, as expected from this stance."));
     }
     startTraverseToStep();
 

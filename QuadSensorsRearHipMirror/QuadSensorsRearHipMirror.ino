@@ -1413,7 +1413,14 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // approach-drive itself has had real fixes since (ToF-invalid-stop,
 // liftIsSecondLeg reset, the createStablePlatform() revert) that
 // weren't in place when 40 first failed.
-#define STEP_LANDING_DEPTH_MM 40.0
+//
+// Lowered 40->25 by explicit request (a 2-3cm placement), alongside
+// the broader redesign that measures and positions the chassis BEFORE
+// the leg ever lifts (see LIFT_REMEASURE_DOWN) instead of during the
+// lift -- this moves below the previously hardware-confirmed 40mm, so
+// watch the next several placements closely for the "barely touching
+// the corner" symptom 40mm itself was raised twice to fix.
+#define STEP_LANDING_DEPTH_MM 25.0
 
 // The final descent onto the step used to be one commanded move
 // straight to the nominal target Y (lastCommandedHeight -
@@ -1617,19 +1624,43 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 
 // ============================================================
 // SAFE-KNEE LIFT (FL lift only)
-// Requested directly: before the hip starts lifting the leg, first
-// move the knee to a safe, verified position on its own and let that
-// settle -- confirmed by hand (CLIMB_PREP_TALL/CLIMB_LIFT_TALL) that
-// knee=270 is a safe fold to hold the leg at before the hip does any
-// large motion, rather than moving hip and knee together into unknown
-// combined territory. Only the hip moves during the lift-off itself;
-// the knee is left alone here and only changes later (during the
-// reach) if a step-place is actually in progress.
+// Originally: before the hip starts lifting the leg, first move the
+// knee to a safe, verified position on its own and let that settle --
+// confirmed by hand (CLIMB_PREP_TALL/CLIMB_LIFT_TALL) that knee=270
+// is a safe fold to hold the leg at before the hip does any large
+// motion, rather than moving hip and knee together into unknown
+// combined territory.
+//
+// Changed 270->0 by explicit request: 270 (toward KNEE_MAX) swings the
+// calf/wheel TOWARD the step during lift-off -- the reason the old
+// step-place sequence needed to reverse away from the step first, for
+// clearance to fold safely. 0 (toward KNEE_MIN) folds the OTHER
+// direction, up and toward the body instead, same idea already
+// confirmed working for FR's second_fr case (see SECOND_FR_SAFE_KNEE).
+// With the leg no longer swinging toward the step during lift-off, the
+// reversing clearance step is no longer needed -- see
+// LIFT_REMEASURE_DOWN, which now measures and positions the chassis
+// BEFORE the leg lifts instead. This also means hip and knee now move
+// SIMULTANEOUSLY for the step-place path (see LIFT_PRE_LIFT_PAUSE),
+// not knee-first-then-hip -- same reasoning as second_fr's own fix:
+// folding toward the body first, while the hip is still down, would
+// dip the foot before the hip gets a chance to lift it clear. The
+// plain lift_fl command (LIFT_KNEE_SAFE) still uses the original
+// sequential knee-then-hip staging with this same (now-new-direction)
+// value.
+//
+// UNTESTED at this new value -- the OLD 270 was hardware-confirmed
+// (CLIMB_PREP_TALL/CLIMB_LIFT_TALL, real IMU: Level); this is a
+// reasoned change based on the same logic that worked for
+// SECOND_FR_SAFE_KNEE, not yet independently verified for FL. Watch
+// closely.
 //
 // LIFT_LIFTED_HIP_FL=150 matches CLIMB_LIFT_TALL exactly -- the one
 // combination hardware-confirmed (real IMU: Level) to pair a genuinely
 // lifted-looking hip angle with this same safe knee, regardless of
-// which prep pose the leg started from.
+// which prep pose the leg started from (confirmed at the OLD knee
+// direction -- unverified whether 150 is still the right hip pairing
+// for the new fold direction).
 //
 // Declared here (not next to where it's used, further down) because
 // startLower() -- also further down, but textually BEFORE
@@ -1637,7 +1668,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // (unlike functions) aren't auto-prototyped by Arduino: they must
 // textually precede their first use in the file.
 // ============================================================
-#define LIFT_SAFE_KNEE_FL   270
+#define LIFT_SAFE_KNEE_FL   0
 #define LIFT_LIFTED_HIP_FL  150
 
 // FR's counterparts for the SECOND-LEG-ONTO-STEP maneuver (see
@@ -1699,7 +1730,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
@@ -2479,64 +2510,84 @@ void updateLiftSequence() {
     // Settled at the lower height -- take the live reading now, while
     // the beam should actually be able to see the step's front face.
     pollTofSensors();
-    bool reversing = false;
-    if (tof1_ok) {
-      float freshForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
-      Serial.print(F("Re-measured step distance: ")); Serial.print(freshForwardMM, 0);
-      Serial.print(F("mm forward (scan estimate was ")); Serial.print(liftStepForwardMM, 0);
-      Serial.println(F("mm)."));
-      // + STEP_LANDING_DEPTH_MM: land onto the step's surface, not its
-      // front edge -- see that constant's comment above.
-      liftStepForwardMM = freshForwardMM + STEP_LANDING_DEPTH_MM;
+    if (liftIsStepPlace) {
+      // REDESIGNED by explicit request: compute the real final reach
+      // target and drive to it NOW, while ToF1 still has a clear line
+      // of sight to the step -- moved here from the old LIFT_TUCK, and
+      // replacing the old "reverse away for clearance" step entirely.
+      // That reverse only ever existed because the OLD knee-fold
+      // direction (LIFT_SAFE_KNEE_FL toward KNEE_MAX) swung the leg
+      // TOWARD the step during lift-off, needing room to do that
+      // safely. LIFT_SAFE_KNEE_FL now folds toward the body instead
+      // (see that constant's comment) -- the leg never swings toward
+      // the step during lift-off anymore, so there's no reason left to
+      // back away first. Measure now, then move to the precise
+      // standoff for a shallow ~STEP_LANDING_DEPTH_MM placement,
+      // BEFORE the leg ever lifts and takes ToF1's view of the step
+      // away with it (tilting the chassis, then lifting FL, both move
+      // ToF1's aim off the step -- confirmed on hardware).
+      //
+      // Same maxReach^2 = x^2 + y^2 reach-ceiling math the old
+      // LIFT_TUCK used, sized against whichever of computeClearY()
+      // (the elevated traverse height) or the final step height has
+      // the larger magnitude, so the chosen x is safely reachable at
+      // both.
+      float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
+      float yClear = computeClearY();
+      float yFinal = lastCommandedHeight - liftStepHeightMM;
+      float yLimiting = (fabs(yFinal) > fabs(yClear)) ? yFinal : yClear;
+      float targetForwardMM = sqrt(max(0.0f, maxReach * maxReach - yLimiting * yLimiting))
+                               - LIFT_APPROACH_REACH_MARGIN_MM;
+      float driveStopMM = targetForwardMM - STEP_LANDING_DEPTH_MM;
 
-      // Back away for tuck/lift clearance NOW, while tof1_mm is known
-      // good -- see LIFT_REVERSE_CLEARANCE_MM's comment above for why
-      // this can't happen any earlier in the sequence. liftStepForwardMM
-      // is bumped by the same clearance amount here rather than
-      // re-measuring again after the reverse -- the beam won't
-      // reliably see the step's face again until the NEXT sink anyway.
-      if (liftIsStepPlace) {
-        startDriveToTof(LIFT_REVERSE_SPEED, (float)tof1_mm + LIFT_REVERSE_CLEARANCE_MM, LIFT_REVERSE_TIMEOUT_MS);
-        liftStepForwardMM += LIFT_REVERSE_CLEARANCE_MM;
-        liftState = LIFT_REVERSE;
-        reversing = true;
+      if (tof1_ok) {
+        float freshForwardMM = (float)tof1_mm + TOF1_FORWARD_OFFSET_MM;
+        Serial.print(F("Re-measured step distance: ")); Serial.print(freshForwardMM, 0);
+        Serial.println(F("mm forward."));
+        Serial.print(F("Targeting ")); Serial.print(targetForwardMM, 0);
+        Serial.print(F("mm forward (near-max reach) -- closing the gap on the wheels to "));
+        Serial.print(driveStopMM, 0);
+        Serial.println(F("mm (ToF-guided) so the reach lands the requested depth onto the step, not just touches it."));
+        startDriveToTof(LIFT_APPROACH_SPEED, driveStopMM - TOF1_FORWARD_OFFSET_MM, LIFT_APPROACH_TIMEOUT_MS);
+      } else {
+        // No live ToF1 reading to steer by -- fall back to a computed,
+        // timed drive from the last known good distance (the scan
+        // estimate already sitting in liftStepForwardMM). Same
+        // estimate-based approach WHEEL_MM_PER_MS_AT_APPROACH was
+        // built for (see that constant).
+        float approachDistanceMM = liftStepForwardMM - driveStopMM;
+        unsigned long approachDriveMs = (approachDistanceMM > 0)
+          ? (unsigned long)round(approachDistanceMM / WHEEL_MM_PER_MS_AT_APPROACH)
+          : 0;
+        Serial.println(F("Re-measure: ToF1 reading invalid -- falling back to a timed drive from the scan estimate."));
+        Serial.print(F("Targeting ")); Serial.print(targetForwardMM, 0);
+        Serial.print(F("mm forward -- estimated ")); Serial.print(approachDistanceMM, 0);
+        Serial.print(F("mm / ")); Serial.print(approachDriveMs);
+        Serial.println(F("ms (timed, no ToF steering)."));
+        startDrive(LIFT_APPROACH_SPEED, approachDriveMs);
       }
+      liftStepForwardMM = targetForwardMM;
+      // Name kept from the old reverse step -- this now just waits for
+      // the pre-lift positioning drive above to finish, see that state.
+      liftState = LIFT_REVERSE;
     } else {
-      Serial.println(F("Re-measure: ToF1 reading invalid, keeping the scan-derived estimate."));
-      if (liftIsStepPlace) Serial.println(F("Skipping pre-lift reverse: ToF1 reading invalid."));
-    }
-    if (!reversing) {
-      // Back to the verified stance before continuing.
-      createStablePlatform();
+      // Plain lifts never actually reach LIFT_REMEASURE_DOWN (see
+      // LIFT_SETTLING -- only liftIsStepPlace routes here via
+      // startLiftSink()), but handled defensively regardless.
+      if (!tof1_ok) Serial.println(F("Re-measure: ToF1 reading invalid, keeping the scan-derived estimate."));
+      createNewStablePlatform();
       liftState = LIFT_REMEASURE_UP;
     }
 
   } else if (liftState == LIFT_REVERSE) {
-    if (driveActive) return; // still backing away (or timed out -- either way driveActive clears on its own)
-    // REVERTED back to re-snapping through createStablePlatform() --
-    // briefly skipped this (going straight into the knee-safe fold
-    // from the sunk pose) to cut unnecessary leg motion, but confirmed
-    // on hardware that leaving the STANCE legs (FR/RL/RR) sunk for the
-    // rest of FL's sequence changes the chassis geometry enough to
-    // matter: with FL's knee not quite at true 180 (real-world
-    // approach-drive/servo precision, not exactly the margin=0 ideal),
-    // FL only barely clips the step instead of planting on it, and
-    // with the stance legs sitting lower than normal, FR's own wheel
-    // ends up in the way right as that marginal contact happens,
-    // contributing to a slip and a real ~39/21 degree tilt -- close to
-    // the confirmed genuine-fall range. The small-adjustment argument
-    // for skipping this was correct in isolation; it didn't account
-    // for how the OTHER three legs' geometry interacts with a FL
-    // placement that's already only marginally solid. Back to the
-    // verified stance before continuing.
-    //
-    // createNewStablePlatform(), NOT createStablePlatform() -- by
-    // request, this is specifically "just before lifting the leg", the
-    // one point in the sequence where the newer FR/RL/RR stance
-    // (pulled closer to center) should apply, deliberately tilting the
-    // chassis to help the upcoming lift. The FIRST stance (LIFT_RAISING,
-    // above) stays plain createStablePlatform() -- "the original
-    // standalone sweep stance".
+    if (driveActive) return; // still closing the gap to the pre-lift standoff (or timed out -- either way driveActive clears on its own)
+    // Re-snap through createNewStablePlatform() (not createStablePlatform())
+    // before continuing -- by request, this is specifically "just
+    // before lifting the leg", the point where the newer FR/RL/RR
+    // stance (pulled closer to center) should apply, deliberately
+    // tilting the chassis to help the upcoming lift. The FIRST stance
+    // (LIFT_RAISING, above) stays plain createStablePlatform() -- "the
+    // original standalone sweep stance".
     createNewStablePlatform();
     liftState = LIFT_REMEASURE_UP;
 
@@ -2553,122 +2604,41 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_PRE_LIFT_PAUSE) {
     if (millis() - liftPreLiftPauseStartMs < LIFT_PRE_LIFT_PAUSE_MS) return;
+    // Hip and knee move SIMULTANEOUSLY here, not knee-first-then-hip
+    // (the LIFT_KNEE_SAFE path plain lift_fl still uses) -- same
+    // reasoning as second_fr's own fix: folding the knee toward the
+    // body FIRST, while the hip is still down, would dip the foot
+    // toward the ground before the hip gets a chance to lift it clear.
+    // Skips LIFT_KNEE_SAFE entirely and goes straight to LIFT_TUCK --
+    // legMoveDone() already waits for BOTH regardless of whether they
+    // were commanded together or in sequence.
     setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
-    liftState = LIFT_KNEE_SAFE;
+    setHip(liftLegIdx, LIFT_LIFTED_HIP_FL);
+    liftState = LIFT_TUCK;
 
   } else if (liftState == LIFT_KNEE_SAFE) {
     if (!legMoveDone(liftLegIdx)) return; // knee still settling into its safe position
     // Step 3 of 3, part B: NOW lift the hip, with the knee already
     // safely folded and holding still -- see LIFT_LIFTED_HIP_FL above.
+    // Only reached by the plain lift_fl/lift_fr path -- step-place
+    // (LIFT_PRE_LIFT_PAUSE above) skips this and moves both joints
+    // together instead.
     setHip(liftLegIdx, (liftLegIdx == FR) ? LIFT_LIFTED_HIP_FR : LIFT_LIFTED_HIP_FL);
     liftState = LIFT_TUCK;
 
   } else if (liftState == LIFT_TUCK) {
-    if (!legMoveDone(liftLegIdx)) return; // hip still lifting
-    if (liftIsStepPlace && !liftIsSecondLeg) {
-      // Always close the gap to a deliberately-chosen, near-max-reach
-      // target on the wheels first, rather than only driving when the
-      // raw scanned distance happens to be out of reach. Two reasons:
-      // (1) predictable, repeatable placement instead of "however far
-      // the scan happened to measure", and (2) reaching close to full
-      // extension for a given height means a close-to-straight knee --
-      // this IS the "reduce the bend" request, since bend and leftover
-      // reach trade off directly against each other in the 2-link IK.
-      // A straighter FL leg leaves more real clearance around/under
-      // the body for FR's own lift/tuck/reach later (see second_fr).
-      //
-      // liftIsSecondLeg is excluded here on purpose -- confirmed on
-      // hardware that letting THIS branch run for the second leg tries
-      // to drive all four wheels again to "close the gap", except the
-      // first leg's wheel is already resting on the step by then, not
-      // the ground -- driving it along with the other three (on a
-      // different surface/height) made the chassis lurch/slide
-      // unpredictably. The second leg reuses liftStepForwardMM as-is
-      // (see startSecondLegOntoStep()) and skips straight to the
-      // traverse below, no wheel movement at all.
-      //
-      // maxReach^2 = x^2 + y^2 is the leg's absolute reach ceiling, but
-      // x is fixed through BOTH the elevated traverse (at computeClearY())
-      // AND the final descend (at the step's own height) -- only y
-      // changes between them. Sized against whichever of those two y's
-      // has the larger magnitude (the more constraining one), so the
-      // chosen x is safely reachable at both, not just the shallower
-      // traverse height.
-      float maxReach = LEG_THIGH_MM + LEG_CALF_MM;
-      float yClear = computeClearY();
-      float yFinal = lastCommandedHeight - liftStepHeightMM;
-      float yLimiting = (fabs(yFinal) > fabs(yClear)) ? yFinal : yClear;
-      float targetForwardMM = sqrt(max(0.0f, maxReach * maxReach - yLimiting * yLimiting))
-                               - LIFT_APPROACH_REACH_MARGIN_MM;
-      // Fixed now, before the drive even starts -- NOT re-derived from
-      // a post-drive remeasure in LIFT_APPROACH. See STEP_LANDING_DEPTH_MM:
-      // the drive deliberately stops CLOSER than this reach needs, so
-      // reaching all the way out to this fixed target is what creates
-      // the overshoot past the step's real edge. Remeasuring afterward
-      // and using that raw distance instead would cancel the depth
-      // back out.
-      //
-      // lastKnownForwardMM captured BEFORE liftStepForwardMM gets
-      // overwritten below -- it's the real ToF-measured distance from
-      // LIFT_REMEASURE_DOWN, already corrected for the LIFT_REVERSE
-      // backup (see that state's comment). Needed now because ToF1 no
-      // longer has a usable view of the step from here: the pre-lift
-      // stance change (createNewStablePlatform()) tilts the chassis on
-      // purpose, and FL itself has since lifted -- both move ToF1's
-      // aim off the step. Confirmed on hardware: with the old
-      // ToF-guided drive, the reading jumped 100+mm within the very
-      // first tick, not just near the step -- no live signal left to
-      // steer by here. This is now a computed, timed drive from the
-      // last GOOD measurement instead (see WHEEL_MM_PER_MS_AT_APPROACH
-      // for the speed estimate this relies on).
-      float lastKnownForwardMM = liftStepForwardMM - STEP_LANDING_DEPTH_MM;
-      liftStepForwardMM = targetForwardMM;
-      float driveStopMM = targetForwardMM - STEP_LANDING_DEPTH_MM;
-      float approachDistanceMM = lastKnownForwardMM - driveStopMM;
-      unsigned long approachDriveMs = (approachDistanceMM > 0)
-        ? (unsigned long)round(approachDistanceMM / WHEEL_MM_PER_MS_AT_APPROACH)
-        : 0;
-      Serial.print(F("Targeting ")); Serial.print(targetForwardMM, 0);
-      Serial.print(F("mm forward (near-max reach) -- closing the gap on the wheels to "));
-      Serial.print(driveStopMM, 0);
-      Serial.print(F("mm, estimated ")); Serial.print(approachDistanceMM, 0);
-      Serial.print(F("mm / ")); Serial.print(approachDriveMs);
-      Serial.println(F("ms (timed -- ToF1 no longer faces the step from this stance)."));
-      startDrive(LIFT_APPROACH_SPEED, approachDriveMs);
-      liftState = LIFT_APPROACH;
-    } else if (liftIsStepPlace) {
-      // Second leg: no wheel movement, no retargeting -- liftStepForwardMM
-      // is already correct (see startSecondLegOntoStep()'s comment, FL/FR
-      // share the same forward distance), so go straight to the reach.
+    if (!legMoveDone(liftLegIdx)) return; // hip/knee still moving
+    if (liftIsStepPlace) {
+      // The pre-lift positioning drive already happened earlier
+      // (LIFT_REMEASURE_DOWN/LIFT_REVERSE, before the lift ever
+      // started) -- liftStepForwardMM is already fixed and correct,
+      // the same way the second-leg (second_fr) case always worked.
+      // No wheel movement here anymore for either case.
       startTraverseToStep();
     } else {
       Serial.println(F("Leg lifted (tucked)."));
       liftState = LIFT_HOLDING;
     }
-
-  } else if (liftState == LIFT_APPROACH) {
-    if (driveActive) return; // still closing the gap (or timed out -- either way driveActive clears on its own)
-    // liftStepForwardMM was already fixed to the near-max reach target
-    // back in LIFT_TUCK, deliberately NOT re-derived from a fresh ToF
-    // reading here -- see STEP_LANDING_DEPTH_MM's comment. Overwriting
-    // it with wherever the drive actually stopped would cancel that
-    // depth back out, landing right back at the edge. This poll is
-    // diagnostic only, to see how close the drive actually got.
-    // The drive is now timed, not ToF-guided (see LIFT_TUCK's comment
-    // -- ToF1 no longer faces the step from this stance), so this
-    // reading is no longer a meaningful "how close did it actually
-    // get" check the way it used to be when the drive itself used
-    // live ToF1 feedback. Left purely informational, not acted on
-    // either way -- liftStepForwardMM stays the fixed reach target
-    // regardless of what this prints.
-    pollTofSensors();
-    if (tof1_ok) {
-      Serial.print(F("Approach drive complete (timed). ToF1 now reads ")); Serial.print((float)tof1_mm + TOF1_FORWARD_OFFSET_MM, 0);
-      Serial.println(F("mm -- not meaningful here, ToF1 isn't aimed at the step from this stance."));
-    } else {
-      Serial.println(F("Approach drive complete (timed). ToF1 reading invalid, as expected from this stance."));
-    }
-    startTraverseToStep();
 
   } else if (liftState == LIFT_CLEAR) {
     if (!legMoveDone(liftLegIdx)) return;

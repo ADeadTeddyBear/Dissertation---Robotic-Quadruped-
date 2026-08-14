@@ -1662,6 +1662,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // above the step's height. Tune this higher if the push recurs.
 #define SECOND_FR_HIP_PEAK 200
 
+// LIFT_FR_DESCEND's own contact-tilt threshold, separate from
+// LIFT_CONTACT_TILT_DELTA_DEG -- confirmed on hardware that reusing
+// the shared 4.0deg threshold false-triggered ("stopped early: contact
+// detected" with no real contact) during this hip-ALONE descent. The
+// shared threshold was tuned for the original combined hip+knee IK
+// descent's tilt signature; a single-joint hip swing over a bigger
+// travel (SECOND_FR_HIP_PEAK down to secondFrFinalHip) likely produces
+// more harmless transient tilt from the leg's own mass alone, not
+// contact. Loosened as a first adjustment -- LIFT_FR_DESCEND now logs
+// the actual pitch/roll delta when it trips, so this can be tuned with
+// real numbers instead of guessed again blindly.
+#define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
+
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
@@ -2582,12 +2595,21 @@ void updateLiftSequence() {
     if (liftDescendStepIdx > 0) {
       float pitch, roll;
       if (!readMPU6050(pitch, roll)) return;
-      if (fabs(pitch - liftDescendBasePitch) > LIFT_CONTACT_TILT_DELTA_DEG ||
-          fabs(roll - liftDescendBaseRoll) > LIFT_CONTACT_TILT_DELTA_DEG) {
+      float pitchDelta = fabs(pitch - liftDescendBasePitch);
+      float rollDelta  = fabs(roll - liftDescendBaseRoll);
+      if (pitchDelta > SECOND_FR_DESCEND_TILT_DELTA_DEG || rollDelta > SECOND_FR_DESCEND_TILT_DELTA_DEG) {
         liftDescendStoppedEarly = (liftDescendStepIdx < LIFT_DESCEND_STEPS);
-        Serial.println(liftDescendStoppedEarly
-          ? "Foot placed on step (stopped early: contact detected via tilt before reaching the full nominal descent)."
-          : "Foot placed on step.");
+        Serial.print(F("Foot placed on step"));
+        if (liftDescendStoppedEarly) {
+          Serial.print(F(" (stopped early: contact detected via tilt -- pitchDelta="));
+          Serial.print(pitchDelta, 1);
+          Serial.print(F(" rollDelta="));
+          Serial.print(rollDelta, 1);
+          Serial.print(F(" vs threshold "));
+          Serial.print(SECOND_FR_DESCEND_TILT_DELTA_DEG, 1);
+          Serial.print(F(" -- if this fires with no real contact, raise SECOND_FR_DESCEND_TILT_DELTA_DEG above these delta values)"));
+        }
+        Serial.println(F("."));
         liftState = LIFT_HOLDING;
         return;
       }

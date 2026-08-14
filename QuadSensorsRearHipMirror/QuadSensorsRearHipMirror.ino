@@ -1570,20 +1570,30 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // ============================================================
 #define PRECLIMB_HIP_FL   92
 #define PRECLIMB_KNEE_FL  100
-// RL/RR updated by request from a fresh hand-jogged reading of the
-// stance (FL excluded from that same reading on purpose -- it was
-// deliberately lifted for a test at the time, not representative of
-// the actual safe base stance, so PRECLIMB_HIP_FL/KNEE_FL above are
-// left as their previously-confirmed values).
-#define PRECLIMB_HIP_RL   4
+#define PRECLIMB_HIP_RL   0
 #define PRECLIMB_KNEE_RL  50
 #define PRECLIMB_HIP_RR   0
-#define PRECLIMB_KNEE_RR  30
-// PRECLIMB_HIP_FR/KNEE_FR updated by request from the same fresh
-// hand-jogged reading as RL/RR above (90/108 -> 45/170), replacing the
-// earlier small 92->90 adjustment below it superseded.
-#define PRECLIMB_HIP_FR   45
-#define PRECLIMB_KNEE_FR  170
+#define PRECLIMB_KNEE_RR  55
+// PRECLIMB_HIP_FR lowered 92->90 by request: FR (as the stance leg
+// during FL's own reach, and as FR's own starting pose before
+// second_fr/raise_rear) was sitting a little too close to the step,
+// leaving too little clearance for FR's own later swing. Same
+// forward-kinematics formula the FL-branch chassis-shift correction
+// above already uses (LEG_THIGH_MM*sin(t1) + LEG_CALF_MM*sin(t1+t2)):
+// at hip=92/knee=108 the foot sits ~271mm forward of the hip; at
+// hip=90 (knee unchanged) that's ~264mm -- about 7mm back. Couples
+// with a small height change too (about 3mm taller at that corner,
+// same t1/t2 math applied to the cos() term) -- not purely isolated
+// like the hip+/knee- cancelling trick elsewhere, but small enough
+// not to matter here. UNVERIFIED against real hardware at this exact
+// value -- if it needs to be more or less than ~7mm, this is the
+// number to adjust.
+#define PRECLIMB_HIP_FR   90
+#define PRECLIMB_KNEE_FR  108
+// NEW_STABLE_* (below, near commandNewStableLift()) is the separate,
+// newer FR/RL/RR pose commanded just before driving forward over the
+// step -- NOT folded into PRECLIMB_* itself, so the original verified
+// climb-start stance (FL's own lift, second_fr, etc.) stays untouched.
 
 // ============================================================
 // SAFE-KNEE LIFT (FL lift only)
@@ -2056,6 +2066,54 @@ void commandClimbPose(const ClimbPose &p) {
   for (int i = 0; i < NUM_HIPS; i++) dur = max(dur, max(hipMoveDurationMs[i], kneeMoveDurationMs[i]));
   for (int i = 0; i < NUM_HIPS; i++) { hipMoveDurationMs[i] = dur; kneeMoveDurationMs[i] = dur; }
   climbMoveActive = true;
+}
+
+// ============================================================
+// NEW STABLE LIFT (FR/RL/RR only, FL untouched) -- commanded just
+// before driving forward over the step, transitioning from the
+// original PRECLIMB stance into this newer, more forward-shifted
+// stance: pulling FR's wheel closer to center leaves more clearance
+// for FL's own reach to get further onto the step without bumping it.
+// FL is deliberately left alone here -- it's already wherever its own
+// lift/step-place sequence put it, not part of this stance change.
+//
+// Deliberately NOT commandClimbPose()/climbMoveActive -- by request,
+// this move is NOT monitored against the MPU6050 for tilt/stability
+// the way every other climb-pose move in this file is. Only waits for
+// the three legs' servo moves to physically finish, nothing else.
+// ============================================================
+#define NEW_STABLE_HIP_FR   45
+#define NEW_STABLE_KNEE_FR  170
+#define NEW_STABLE_HIP_RL   4
+#define NEW_STABLE_KNEE_RL  50
+#define NEW_STABLE_HIP_RR   0
+#define NEW_STABLE_KNEE_RR  30
+
+bool newStableLiftActive = false;
+
+void commandNewStableLift() {
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE;
+  setHip(FR, NEW_STABLE_HIP_FR);   setKnee(FR, NEW_STABLE_KNEE_FR);
+  setHip(RL, NEW_STABLE_HIP_RL);   setKnee(RL, NEW_STABLE_KNEE_RL);
+  setHip(RR, NEW_STABLE_HIP_RR);   setKnee(RR, NEW_STABLE_KNEE_RR);
+  unsigned long dur = 0;
+  dur = max(dur, max(hipMoveDurationMs[FR], kneeMoveDurationMs[FR]));
+  dur = max(dur, max(hipMoveDurationMs[RL], kneeMoveDurationMs[RL]));
+  dur = max(dur, max(hipMoveDurationMs[RR], kneeMoveDurationMs[RR]));
+  hipMoveDurationMs[FR] = dur; kneeMoveDurationMs[FR] = dur;
+  hipMoveDurationMs[RL] = dur; kneeMoveDurationMs[RL] = dur;
+  hipMoveDurationMs[RR] = dur; kneeMoveDurationMs[RR] = dur;
+  newStableLiftActive = true;
+}
+
+// Call every loop() pass -- no tilt check by request, just waits for
+// FR/RL/RR to physically finish moving, then restores normal speed.
+void updateNewStableLift() {
+  if (!newStableLiftActive) return;
+  if (!legMoveDone(FR) || !legMoveDone(RL) || !legMoveDone(RR)) return;
+  newStableLiftActive = false;
+  moveSpeedScale = 1.0;
+  Serial.println(F("New stable lift pose reached (FR/RL/RR only, FL untouched -- not monitored for tilt)."));
 }
 
 // Same reasoning as checkLiftTiltSafety(), reused here since a climb
@@ -3011,6 +3069,10 @@ void handleCommand(String input) {
     commandClimbPose(REAR_KNEE_LURCH_START);
     Serial.println(F("Commanding REAR_KNEE_LURCH_START -- both front legs up on the step, ready for the RL knee-lurch technique. UNTESTED via this automated path, watch closely."));
 
+  } else if (input == "new_stable_lift") {
+    commandNewStableLift();
+    Serial.println(F("Commanding NEW_STABLE_LIFT (FR/RL/RR only) -- NOT monitored for tilt, watch closely."));
+
   } else if (input == "sensors") {
     printSensors();
 
@@ -3029,7 +3091,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | rear_knee_lurch_start | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | rear_knee_lurch_start | new_stable_lift | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -4112,6 +4174,9 @@ void loop() {
 
   // Step any in-progress rear-wheel lift (RL/RR clear of the ground) forward
   updateRearWheelLift();
+
+  // Step any in-progress new-stable-lift move (FR/RL/RR, no tilt check) forward
+  updateNewStableLift();
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

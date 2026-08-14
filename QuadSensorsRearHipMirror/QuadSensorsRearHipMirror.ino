@@ -58,6 +58,12 @@ unsigned long driveStopAtMs = 0;
 float         driveTofTargetMM = -1; // -1 = plain timed drive, no ToF stop condition
 bool          driveTofApproaching = false; // true: stop once tof1_mm <= target (closing in); false: stop once tof1_mm >= target (backing away)
 
+// Same reason again: handleCommand()'s drive_stop branch (well above
+// the RAISE REAR section that normally defines this) needs to read
+// raiseRearState to know whether there's a rear-raise to cancel.
+enum RaiseRearState { RAISE_REAR_IDLE, RAISE_REAR_STEPPING, RAISE_REAR_DRIVING, RAISE_REAR_SETTLING };
+RaiseRearState raiseRearState = RAISE_REAR_IDLE;
+
 // ============================================================
 // HIP SERVO PINS
 // ============================================================
@@ -2790,7 +2796,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -2876,6 +2882,18 @@ void handleCommand(String input) {
       Serial.println(F("Cannot start second-leg placement (first leg isn't down-and-holding, is already FR, or a safety abort is active -- send 'lower' first if so)."));
     }
 
+  } else if (input == "raise_rear") {
+    // See RAISE REAR's block comment above -- UNTESTED, watch closely.
+    if (startRaiseRear()) {
+      Serial.println(F("Raising rear toward level -- UNTESTED, watch extremely closely."));
+    } else {
+      Serial.println(F("Cannot start raise_rear (front leg(s) not down-and-holding, or already in progress)."));
+    }
+
+  } else if (input == "raise_rear_stop") {
+    stopRaiseRear();
+    Serial.println(F("Raise rear stopped."));
+
   } else if (input.startsWith("drive ")) {
     String rest = input.substring(6);
     int    sep  = rest.indexOf(' ');
@@ -2909,6 +2927,7 @@ void handleCommand(String input) {
     stopWheels();
     squareState = SQUARE_IDLE; // also cancels an in-progress square-up
     turnTestActive = false; // also cancels an in-progress turn test
+    if (raiseRearState != RAISE_REAR_IDLE) stopRaiseRear(); // also cancels an in-progress raise_rear
     Serial.println(F("Wheels stopped."));
 
   } else if (input == "square") {
@@ -3110,6 +3129,149 @@ void updateDrive() {
     if (!driveTofApproaching && tof1_mm >= driveTofTargetMM) { stopWheels(); return; }
   }
   if ((long)(millis() - driveStopAtMs) >= 0) stopWheels(); // safety fallback -- always wins eventually regardless of ToF state
+}
+
+// ============================================================
+// RAISE REAR: with FL (and FR) already resting on the step, extend
+// the rear legs (straightening RL/RR toward KNEE_START -- the same
+// "calf in line with thigh" reference used everywhere else in this
+// file) to push the chassis up toward the step's height, driving the
+// wheels forward a little after each increment so the rear doesn't
+// get left behind as the body rises out from under it -- otherwise
+// the chassis would just pitch further nose-up without the rear ever
+// catching up.
+//
+// Stopping condition is LEVEL, not a fixed number of degrees: the
+// front is already up at step height and the rear is still on the
+// ground, so pitch starts off-level and should move toward 0 as the
+// rear rises to match -- once |pitch| is within LEVEL_TOLERANCE_DEG,
+// the whole chassis is roughly at step height and this is done.
+// Checking the MAGNITUDE (not a specific signed direction) means this
+// doesn't depend on knowing whether "front high" reads as positive or
+// negative pitch in this code -- it just watches for pitch closing in
+// on zero either way.
+//
+// The front legs extend a little too, by request ("lower the front
+// legs but not too much") -- much slower than the rear and hard
+// capped, since FL/FR are already resting on the step and
+// over-extending them risks lifting a wheel off the step surface.
+//
+// UNTESTED ON HARDWARE -- this is new territory: the first maneuver
+// that deliberately runs the chassis through a large, sustained pitch
+// change while driving, with both ends of the robot at different
+// heights the whole time. Watch extremely closely and be ready to
+// catch/support the robot.
+// ============================================================
+#define RAISE_REAR_KNEE_STEP_DEG       2.0  // per-increment extension for RL/RR -- small and incremental, same idea as LIFT_DESCEND_STEPS
+#define RAISE_REAR_FRONT_KNEE_STEP_DEG 0.5  // front legs extend much more slowly -- "not too much"
+#define RAISE_REAR_FRONT_KNEE_MAX_DEG  15.0 // hard cap on total front-knee extension from wherever FL/FR started this sequence
+#define RAISE_REAR_DRIVE_SPEED         120
+#define RAISE_REAR_DRIVE_MS            150  // short forward nudge after each increment
+#define RAISE_REAR_SETTLE_MS           400  // dwell after the drive pulse before trusting the IMU
+#define RAISE_REAR_ROLL_ABORT_DEG      12.0 // roll isn't the axis being intentionally changed here -- tighter than the general LIFT_TILT_ABORT_DEG, any real roll means something is going wrong sideways
+#define RAISE_REAR_MAX_STEPS           80   // hard fallback in case level is never reached (e.g. wheel slip, bad height estimate)
+
+// RaiseRearState/raiseRearState are declared near the top of the file
+// (right after driveActive) -- handleCommand()'s drive_stop branch
+// needs them and comes before this section. See that comment.
+int   raiseRearStepCount = 0;
+int   raiseRearFrontKneeStartFL = 0, raiseRearFrontKneeStartFR = 0;
+unsigned long raiseRearSettleStartMs = 0;
+
+bool startRaiseRear() {
+  if (liftState != LIFT_HOLDING) return false; // expects FL (and FR, via second_fr) already down and holding on the step
+  if (raiseRearState != RAISE_REAR_IDLE) return false;
+  raiseRearStepCount = 0;
+  raiseRearFrontKneeStartFL = kneePos[FL];
+  raiseRearFrontKneeStartFR = kneePos[FR];
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // careful, slow motion -- matches the rest of the climb sequence
+  raiseRearState = RAISE_REAR_STEPPING;
+  return true;
+}
+
+void stopRaiseRear() {
+  raiseRearState = RAISE_REAR_IDLE;
+  moveSpeedScale = 1.0;
+  stopWheels();
+}
+
+void updateRaiseRear() {
+  if (raiseRearState == RAISE_REAR_IDLE) return;
+
+  if (raiseRearState == RAISE_REAR_STEPPING) {
+    // Extend RL/RR toward KNEE_START (straight) -- capped there, since
+    // going past it folds the knee the other way instead of extending
+    // further.
+    int newKneeRL = min(KNEE_START[RL], kneePos[RL] + (int)RAISE_REAR_KNEE_STEP_DEG);
+    int newKneeRR = min(KNEE_START[RR], kneePos[RR] + (int)RAISE_REAR_KNEE_STEP_DEG);
+    setKnee(RL, newKneeRL);
+    setKnee(RR, newKneeRR);
+
+    // Front legs extend too, much more slowly and capped -- "lower the
+    // front legs but not too much".
+    int frontDelta = (int)(raiseRearStepCount * RAISE_REAR_FRONT_KNEE_STEP_DEG);
+    if (frontDelta <= RAISE_REAR_FRONT_KNEE_MAX_DEG) {
+      setKnee(FL, min(KNEE_START[FL], raiseRearFrontKneeStartFL + frontDelta));
+      setKnee(FR, min(KNEE_START[FR], raiseRearFrontKneeStartFR + frontDelta));
+    }
+
+    raiseRearStepCount++;
+    raiseRearState = RAISE_REAR_DRIVING;
+    return;
+  }
+
+  if (raiseRearState == RAISE_REAR_DRIVING) {
+    bool allDone = true;
+    for (int i = 0; i < NUM_HIPS; i++) allDone = allDone && legMoveDone(i);
+    if (!allDone) return;
+    // Nudge forward to keep the rear from falling behind as the body
+    // rises -- see the block comment above. Plain timed drive, not
+    // ToF-targeted: at this range ToF1 is likely already too close to
+    // the step (or looking past it) to be a reliable target, same
+    // unreliability the approach-drive fixes were built around.
+    startDrive(RAISE_REAR_DRIVE_SPEED, RAISE_REAR_DRIVE_MS);
+    raiseRearSettleStartMs = millis();
+    raiseRearState = RAISE_REAR_SETTLING;
+    return;
+  }
+
+  if (raiseRearState == RAISE_REAR_SETTLING) {
+    if (driveActive) return; // still driving forward
+    if (millis() - raiseRearSettleStartMs < RAISE_REAR_SETTLE_MS) return; // let the chassis physically settle before trusting the IMU
+
+    float pitch, roll;
+    if (!readMPU6050(pitch, roll)) return; // bad read -- see readMPU6050()'s comment; retry next tick rather than acting on garbage
+
+    Serial.print(F("Raise rear step ")); Serial.print(raiseRearStepCount);
+    Serial.print(F(": pitch=")); Serial.print(pitch, 1);
+    Serial.print(F(" roll=")); Serial.println(roll, 1);
+
+    if (fabs(roll) > RAISE_REAR_ROLL_ABORT_DEG) {
+      Serial.println(F("Raise rear ABORTED: roll exceeded safety threshold -- freezing where it is. Check the robot before continuing."));
+      stopRaiseRear();
+      return;
+    }
+
+    if (fabs(pitch) <= LEVEL_TOLERANCE_DEG) {
+      Serial.println(F("Raise rear complete -- chassis level, rear should now be near step height."));
+      stopRaiseRear();
+      return;
+    }
+
+    if (raiseRearStepCount >= RAISE_REAR_MAX_STEPS) {
+      Serial.println(F("Raise rear stopped: reached the step limit without leveling out -- check the rear legs' reach."));
+      stopRaiseRear();
+      return;
+    }
+
+    if (kneePos[RL] >= KNEE_START[RL] && kneePos[RR] >= KNEE_START[RR]) {
+      Serial.println(F("Raise rear stopped: rear legs fully extended but chassis still not level -- may need to drive further forward, or the step height estimate is off."));
+      stopRaiseRear();
+      return;
+    }
+
+    raiseRearState = RAISE_REAR_STEPPING;
+  }
 }
 
 // ============================================================
@@ -3407,6 +3569,9 @@ void loop() {
 
   // Auto-stop a single turn-test pulse once its duration elapses
   updateTurnTest();
+
+  // Step any in-progress rear-raise (extend RL/RR toward level) forward
+  updateRaiseRear();
 
   // Non-blocking command reader — works with any line ending
   String cmd = readCommand();

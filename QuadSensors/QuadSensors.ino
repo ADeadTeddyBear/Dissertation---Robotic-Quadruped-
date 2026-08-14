@@ -1568,6 +1568,27 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define LIFT_SAFE_KNEE_FR   270
 #define LIFT_LIFTED_HIP_FR  150
 
+// Alternative safe-knee direction for FR specifically when lifting to
+// place it onto the step with FL ALREADY there (startSecondLegOntoStep()
+// below) -- requested directly: folding the knee UP toward
+// LIFT_SAFE_KNEE_FR's 270 (KNEE_MAX[FR]) swings the calf/wheel forward,
+// toward the step and toward FL's already-placed foot, right in the
+// one situation where something is actually sitting there to contact.
+// Folding the OTHER direction, toward KNEE_MIN[FR] instead, swings the
+// calf/wheel up and back, away from both -- a genuinely safer path for
+// this specific maneuver rather than a different amount of the same
+// fold. Targets the far extreme (0) for the same reason
+// LIFT_SAFE_KNEE_FR itself targets its own far extreme (270): the fold
+// DIRECTION is the point, not a specific partial angle. Hip still
+// lifts to the existing LIFT_LIFTED_HIP_FR target -- only the knee's
+// fold direction changes here.
+//
+// UNTESTED ON HARDWARE, same as LIFT_SAFE_KNEE_FR/LIFT_LIFTED_HIP_FR
+// already were for this maneuver -- if ground clearance ends up
+// insufficient with this fold direction, LIFT_LIFTED_HIP_FR (the hip
+// target, unchanged here) is the next thing to raise.
+#define SECOND_FR_SAFE_KNEE 0
+
 enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_APPROACH, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
@@ -1726,7 +1747,12 @@ bool startSecondLegOntoStep(int legToLift) {
   liftIsSecondLeg = true;
   liftUsingVerifiedStance = true;
   liftLegIdx = legToLift;
-  setKnee(liftLegIdx, (legToLift == FR) ? LIFT_SAFE_KNEE_FR : LIFT_SAFE_KNEE_FL);
+  // FR folds toward SECOND_FR_SAFE_KNEE (away from FL/the step) instead
+  // of LIFT_SAFE_KNEE_FR (270, toward them) -- see that constant's
+  // comment. FL (the other possible legToLift here, if a future
+  // second_fl is added) keeps the original direction; nothing about FL
+  // placing next to an already-held FR has been flagged as a problem.
+  setKnee(liftLegIdx, (legToLift == FR) ? SECOND_FR_SAFE_KNEE : LIFT_SAFE_KNEE_FL);
   liftState = LIFT_KNEE_SAFE;
   return true;
 }

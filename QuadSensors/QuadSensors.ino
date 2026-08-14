@@ -3129,11 +3129,15 @@ void updateDrive() {
 // over-extending them risks lifting a wheel off the step surface.
 //
 // The forward nudge after every single increment is a known
-// placeholder, not a final design -- a separate standalone sketch
-// (WheelCalibration/WheelCalibration.ino) is measuring actual
-// mm-per-ms at RAISE_REAR_DRIVE_SPEED, so this can move to a small
-// number of precisely-timed drives instead of one blind pulse per
-// step once that number is known.
+// placeholder, not a final design. WHEEL_MM_PER_MS_AT_120 below is
+// the real measured number from WheelCalibration/WheelCalibration.ino
+// (FL lifted, other three wheels loaded and driving, at
+// RAISE_REAR_DRIVE_SPEED): observed ~1.5 wheel rotations in 4000ms,
+// i.e. 1.5 * 282.7mm circumference / 4000ms. This still needs the
+// total forward distance the rear should travel during this maneuver
+// (robot wheelbase / how far the rear needs to creep forward to seat
+// on the step) before the per-step nudge can become a small number of
+// precisely-timed drives instead of one blind pulse per step.
 //
 // UNTESTED ON HARDWARE -- this is new territory: the first maneuver
 // that deliberately runs the chassis through a large, sustained pitch
@@ -3145,6 +3149,7 @@ void updateDrive() {
 #define RAISE_REAR_FRONT_KNEE_STEP_DEG 0.5  // front legs extend much more slowly -- "not too much"
 #define RAISE_REAR_FRONT_KNEE_MAX_DEG  15.0 // hard cap on total front-knee extension from wherever FL/FR started this sequence
 #define RAISE_REAR_DRIVE_SPEED         120
+#define WHEEL_MM_PER_MS_AT_120         0.106 // measured via WheelCalibration.ino: ~1.5 rotations of FL's wheel (90mm dia, 282.7mm circumference) in 4000ms while driving loaded at speed 120
 #define RAISE_REAR_DRIVE_MS            150  // short forward nudge after each increment
 #define RAISE_REAR_SETTLE_MS           400  // dwell after the drive pulse before trusting the IMU
 #define RAISE_REAR_ROLL_ABORT_DEG      12.0 // roll isn't the axis being intentionally changed here -- tighter than the general LIFT_TILT_ABORT_DEG, any real roll means something is going wrong sideways

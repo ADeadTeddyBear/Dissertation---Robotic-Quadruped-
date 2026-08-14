@@ -64,6 +64,15 @@ bool          driveTofApproaching = false; // true: stop once tof1_mm <= target 
 enum RaiseRearState { RAISE_REAR_IDLE, RAISE_REAR_STEPPING, RAISE_REAR_DRIVING, RAISE_REAR_SETTLING };
 RaiseRearState raiseRearState = RAISE_REAR_IDLE;
 
+// Same reason again: startLiftSequence() (well above the RAISE REAR
+// section that normally defines this) needs to reset this flag at the
+// start of every new climb. See RAISE_REAR_FRONT_KNEE_MAX_DEG's comment
+// for why this exists -- without it, re-invoking raise_rear after it
+// stops short of level silently re-captures a fresh (already-advanced)
+// front-knee start each time, letting the total front-knee extension
+// creep well past the intended one-time cap across repeated calls.
+bool raiseRearFrontKneeCaptured = false;
+
 // ============================================================
 // HIP SERVO PINS
 // ============================================================
@@ -1723,6 +1732,12 @@ bool startLiftSequence(int legToLift) {
     n++;
   }
 
+  // A genuinely NEW climb starts here -- reset raise_rear's front-knee
+  // capture flag (see its declaration/comment near RAISE_REAR_FRONT_KNEE_MAX_DEG)
+  // so the next raise_rear call on this climb captures a fresh
+  // reference, instead of leaving a stale one from some earlier climb.
+  raiseRearFrontKneeCaptured = false;
+
   startStandMove(LIFT_STAND_TARGET_PROGRESS); // no-op if already there/close, or already moving
   liftState = LIFT_RAISING;
   return true;
@@ -3303,8 +3318,15 @@ bool startRaiseRear() {
   raiseRearStepCount = 0;
   raiseRearRLHipStart = hipPos[RL];   raiseRearRLKneeStart = kneePos[RL];
   raiseRearRRHipStart = hipPos[RR];   raiseRearRRKneeStart = kneePos[RR];
-  raiseRearFrontKneeStartFL = kneePos[FL];
-  raiseRearFrontKneeStartFR = kneePos[FR];
+  // Only captured ONCE per climb (see raiseRearFrontKneeCaptured's
+  // comment) -- re-invoking raise_rear after it stops short must not
+  // re-anchor this to the already-advanced current knee position, or
+  // RAISE_REAR_FRONT_KNEE_MAX_DEG's cap effectively resets every call.
+  if (!raiseRearFrontKneeCaptured) {
+    raiseRearFrontKneeStartFL = kneePos[FL];
+    raiseRearFrontKneeStartFR = kneePos[FR];
+    raiseRearFrontKneeCaptured = true;
+  }
 
   raiseRearHipTargetRL = HIP_START[RL]; raiseRearKneeTargetRL = KNEE_START[RL];
   raiseRearHipTargetRR = HIP_START[RR]; raiseRearKneeTargetRR = KNEE_START[RR];

@@ -1725,10 +1725,27 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define SECOND_FR_TURN_SPEED      150
 #define SECOND_FR_TURN_MS         1300
 
-// Plain forward drive of all four wheels, right after FR's post-
-// placement compensation turn above -- requested directly.
+// Small straight reverse of ALL FOUR wheels right before FR starts
+// lifting (see LIFT_FR_TURN1/LIFT_FR_PRE_REVERSE), requested directly
+// after the pivot alone still let FR's wheel catch on the step edge --
+// a pivot rotates but doesn't give FR much real backward translation,
+// so this adds a genuine straight-line reverse on top of it. Explicitly
+// includes FL+RL this time (unlike the pivot, which deliberately
+// avoided driving FL): FL is already resting on the step at this
+// point, so this does carry the same back-off-the-step risk flagged
+// everywhere else in this file -- accepted anyway for the extra
+// clearance. Kept small ("a tiny amount") to limit that exposure.
+#define SECOND_FR_PRE_REVERSE_SPEED 150
+#define SECOND_FR_PRE_REVERSE_MS    200
+
+// Plain forward drive of all four wheels, right after FR's placement,
+// before the post-placement turn-back above -- requested directly.
+// Shortened 3000ms -> 200ms to specifically compensate for the new
+// SECOND_FR_PRE_REVERSE_MS reverse above (same order of magnitude),
+// rather than being a large separate "drive the chassis over the
+// step" move.
 #define SECOND_FR_POST_DRIVE_SPEED 100
-#define SECOND_FR_POST_DRIVE_MS    3000
+#define SECOND_FR_POST_DRIVE_MS    200
 
 // RL/RR swap applied ONLY at the moment second_fr starts (see
 // startSecondLegOntoStep()'s FR branch below) -- by request, this
@@ -1757,7 +1774,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1, LIFT_FR_CLEAR_RISE, LIFT_FR_POST_TURN, LIFT_FR_POST_DRIVE };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1, LIFT_FR_PRE_REVERSE, LIFT_FR_CLEAR_RISE, LIFT_FR_POST_TURN, LIFT_FR_POST_DRIVE };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
@@ -1978,13 +1995,16 @@ bool startSecondLegOntoStep(int legToLift) {
     // this pulse, even with active braking. Driving FL+RL forward is
     // also the safe direction for FL specifically: it presses FL
     // further onto the step instead of risking rolling it back off.
-    // LIFT_FR_TURN1 waits for this to finish, then goes straight into
-    // the lift. Once FR is placed (LIFT_FR_DESCEND), it drives again,
-    // forward THEN turn: LIFT_FR_POST_DRIVE (plain forward drive, more
-    // margin from the edge before turning) -> LIFT_FR_POST_TURN (full
-    // reverse pivot, undoing this one exactly) -> LIFT_HOLDING. FL's
-    // own placement never goes through those two states -- see
-    // LIFT_FR_DESCEND's liftIsSecondLeg check.
+    // LIFT_FR_TURN1 waits for this to finish, then starts a small
+    // straight all-four-wheel reverse (LIFT_FR_PRE_REVERSE, see
+    // SECOND_FR_PRE_REVERSE_SPEED/MS) before the lift actually starts.
+    // Once FR is placed (LIFT_FR_DESCEND), it drives again, forward
+    // THEN turn: LIFT_FR_POST_DRIVE (plain forward drive, compensating
+    // for the pre-lift reverse and giving more margin from the edge
+    // before turning) -> LIFT_FR_POST_TURN (full reverse pivot, undoing
+    // the pre-lift pivot) -> LIFT_HOLDING. FL's own placement never
+    // goes through any of these extra states -- see LIFT_FR_DESCEND's
+    // liftIsSecondLeg check.
     if (!startTurnTestLR(SECOND_FR_TURN_SPEED, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift reverse (something else active)."));
       liftLegIdx = -1;
@@ -2736,6 +2756,15 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_FR_TURN1) {
     if (turnTestActive) return; // still pivoting to create lift clearance
+    // Small straight reverse of all four wheels, requested directly --
+    // see SECOND_FR_PRE_REVERSE_SPEED/MS's comment: the pivot alone
+    // still let FR catch on the step, so this adds real backward
+    // translation on top of it, right before the leg actually lifts.
+    startDrive(-SECOND_FR_PRE_REVERSE_SPEED, SECOND_FR_PRE_REVERSE_MS);
+    liftState = LIFT_FR_PRE_REVERSE;
+
+  } else if (liftState == LIFT_FR_PRE_REVERSE) {
+    if (driveActive) return; // still reversing a tiny amount before the lift
     // IK-computed vertical lift, not a fixed hip/knee angle pair --
     // requested directly after the wheel kept catching on the step
     // edge despite the pivot: reusing SECOND_FR_HIP_PEAK/SAFE_KNEE

@@ -1748,18 +1748,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 //
 // Now, by request, FR's placement (LIFT_FR_DESCEND, second_fr only --
 // see LIFT_FR_POST_TURN/LIFT_FR_POST_DRIVE) DOES drive again after
-// the foot is down: right wheels only (FR+RR), forward, same
-// speed/duration as the pre-lift reverse -- an exact mirror, meant to
-// compensate for that earlier reverse now that the foot is planted
-// and the chassis has four-leg support again (a different situation
-// than the wiggle's mid-air-FR case this was removed for). Then a
-// plain forward drive of all four wheels (SECOND_FR_POST_DRIVE_SPEED/
-// MS) to bring the chassis further over the step.
+// the foot is down: a full reverse pivot (FL+RL backward, FR+RR
+// forward -- the exact opposite of the pre-lift pivot above), same
+// speed/duration, to turn the chassis back and undo that rotation now
+// that both front feet are on the step. UNTESTED: this drives FL
+// backward while it's resting on the step, the same motion flagged as
+// risky everywhere else in this file -- requested directly anyway to
+// straighten the chassis out; watch closely. Then a plain forward
+// drive of all four wheels (SECOND_FR_POST_DRIVE_SPEED/MS) to bring
+// the chassis further over the step.
 //
 // Speed hardcoded to match SQUARE_TURN_SPEED's own value (defined
 // later in the file, after this section, so can't be referenced by
 // name here -- macros must textually precede their first use).
-// Duration 1000ms by request.
+// Duration 1300ms by request.
 #define SECOND_FR_TURN_SPEED      150
 #define SECOND_FR_TURN_MS         1300
 
@@ -2019,10 +2021,10 @@ bool startSecondLegOntoStep(int legToLift) {
     // further onto the step instead of risking rolling it back off.
     // LIFT_FR_TURN1 waits for this to finish, then goes straight into
     // the lift. Once FR is placed (LIFT_FR_DESCEND), it drives again
-    // to compensate: LIFT_FR_POST_TURN (right wheels forward,
-    // mirroring this reverse) -> LIFT_FR_POST_DRIVE (plain forward
-    // drive) -> LIFT_HOLDING. FL's own placement never goes through
-    // those two states -- see LIFT_FR_DESCEND's liftIsSecondLeg check.
+    // to turn back: LIFT_FR_POST_TURN (full reverse pivot, undoing
+    // this one exactly) -> LIFT_FR_POST_DRIVE (plain forward drive)
+    // -> LIFT_HOLDING. FL's own placement never goes through those two
+    // states -- see LIFT_FR_DESCEND's liftIsSecondLeg check.
     if (!startTurnTestLR(SECOND_FR_TURN_SPEED, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift reverse (something else active)."));
       liftLegIdx = -1;
@@ -2839,14 +2841,14 @@ void updateLiftSequence() {
         // placement compensation drive instead (LIFT_FR_POST_TURN); if
         // it can't start, that's not worth losing a successful
         // placement over, just go straight to holding.
-        liftState = (liftIsSecondLeg && startTurnTestLR(0, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_TURN : LIFT_HOLDING;
+        liftState = (liftIsSecondLeg && startTurnTestLR(-SECOND_FR_TURN_SPEED, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_TURN : LIFT_HOLDING;
         return;
       }
     }
 
     if (liftDescendStepIdx >= LIFT_DESCEND_STEPS) {
       Serial.println(F("Foot placed on step."));
-      liftState = (liftIsSecondLeg && startTurnTestLR(0, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_TURN : LIFT_HOLDING;
+      liftState = (liftIsSecondLeg && startTurnTestLR(-SECOND_FR_TURN_SPEED, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_TURN : LIFT_HOLDING;
       return;
     }
 
@@ -2856,7 +2858,7 @@ void updateLiftSequence() {
     setHip(liftLegIdx, stepHip);
 
   } else if (liftState == LIFT_FR_POST_TURN) {
-    if (turnTestActive) return; // still driving the right wheels forward to compensate for the pre-lift reverse
+    if (turnTestActive) return; // still turning back -- FL+RL reverse, FR+RR forward, undoing the pre-lift pivot now that FR is placed
     startDrive(SECOND_FR_POST_DRIVE_SPEED, SECOND_FR_POST_DRIVE_MS);
     liftState = LIFT_FR_POST_DRIVE;
 

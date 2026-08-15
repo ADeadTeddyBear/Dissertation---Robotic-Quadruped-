@@ -1688,8 +1688,14 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // match SQUARE_TURN_SPEED's own value (defined later in the file,
 // after this section, so can't be referenced by name here -- macros
 // must textually precede their first use).
-#define SECOND_FR_TURN_SPEED 150
-#define SECOND_FR_TURN_MS    500
+// Left side drives harder than the right during this pulse (requested
+// directly) -- SECOND_FR_TURN_LEFT_SPEED only bumps the left wheels'
+// magnitude, the right side still moves at SECOND_FR_TURN_SPEED.
+// 200 is an UNTESTED starting bump from the prior symmetric 150; tune
+// on hardware based on how much extra clearance it actually buys.
+#define SECOND_FR_TURN_SPEED      150
+#define SECOND_FR_TURN_LEFT_SPEED 200
+#define SECOND_FR_TURN_MS         500
 
 // LIFT_FR_DESCEND's own contact-tilt threshold, separate from
 // LIFT_CONTACT_TILT_DELTA_DEG -- confirmed on hardware that reusing
@@ -1920,7 +1926,7 @@ bool startSecondLegOntoStep(int legToLift) {
     // begins. LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT -> LIFT_FR_TURN2
     // bracket the lift with these two pulses, then hand off to
     // LIFT_FR_RISE exactly as before.
-    if (!startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+    if (!startTurnTestLR(SECOND_FR_TURN_LEFT_SPEED, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift turn (something else active)."));
       liftLegIdx = -1;
       liftIsSecondLeg = false;
@@ -2736,7 +2742,7 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_FR_TURN1_LEGWAIT) {
     if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together
-    if (!startTurnTest(-SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+    if (!startTurnTestLR(-SECOND_FR_TURN_LEFT_SPEED, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the straightening turn (something else active)."));
       abortLiftSequence();
       return;
@@ -4129,8 +4135,15 @@ void applySquareTurn(float adjustedDiff) {
 // fixes a chassis that isn't doing a clean pivot turn.
 // ============================================================
 bool startTurnTest(int speed, unsigned long durationMs) {
+  return startTurnTestLR(speed, -speed, durationMs);
+}
+
+// Same as startTurnTest() but with independent left/right speeds, so a
+// pulse can drive one side harder than the other instead of a
+// symmetric pivot -- see second_fr's LIFT_FR_TURN1/TURN2 pulses.
+bool startTurnTestLR(int leftSpeed, int rightSpeed, unsigned long durationMs) {
   if (squareState != SQUARE_IDLE || driveActive || turnTestActive) return false;
-  setWheelSpeedsLR(speed, -speed);
+  setWheelSpeedsLR(leftSpeed, rightSpeed);
   turnTestActive = true;
   turnTestStopAtMs = millis() + durationMs;
   return true;

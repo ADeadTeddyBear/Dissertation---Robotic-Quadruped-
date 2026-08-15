@@ -2818,18 +2818,22 @@ void updateLiftSequence() {
           Serial.print(F(" -- if this fires with no real contact, raise SECOND_FR_DESCEND_TILT_DELTA_DEG above these delta values)"));
         }
         Serial.println(F("."));
-        // Correction wiggle now runs AFTER placement, not bracketing the
-        // lift-off (see startSecondLegOntoStep()'s comment) -- if it
-        // can't start for some reason, that's not worth losing a
+        // Correction wiggle only for second_fr (see startSecondLegOntoStep()'s
+        // comment) -- LIFT_FR_DESCEND is shared with FL's own placement
+        // too (same staged technique, leg-agnostic despite the name),
+        // and FL must NOT move at all once its leg is placed. Confirmed
+        // on hardware: this wiggle was firing after FL's placement too
+        // and dragging the just-placed foot back off the step. If the
+        // wiggle can't start for some reason, that's not worth losing a
         // successful placement over, just go straight to holding.
-        liftState = startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS) ? LIFT_FR_POST_WIGGLE : LIFT_HOLDING;
+        liftState = (liftIsSecondLeg && startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_WIGGLE : LIFT_HOLDING;
         return;
       }
     }
 
     if (liftDescendStepIdx >= LIFT_DESCEND_STEPS) {
       Serial.println(F("Foot placed on step."));
-      liftState = startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS) ? LIFT_FR_POST_WIGGLE : LIFT_HOLDING;
+      liftState = (liftIsSecondLeg && startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_WIGGLE : LIFT_HOLDING;
       return;
     }
 

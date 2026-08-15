@@ -3325,12 +3325,21 @@ void handleCommand(String input) {
       Serial.println(F("Already moving, or already at that percent."));
     }
 
-  } else if (input == "lift_fl" || input == "lift_fr" || input == "lift_rl" || input == "lift_rr") {
-    int legIdx = (input == "lift_fl") ? FL : (input == "lift_fr") ? FR : (input == "lift_rl") ? RL : RR;
+  } else if (input == "lift_fl" || input == "lift_fr" || input == "lift_rr") {
+    int legIdx = (input == "lift_fl") ? FL : (input == "lift_fr") ? FR : RR;
     if (startLift(legIdx)) {
       Serial.println(F("Raising to a stable stance before lift..."));
     } else {
       Serial.println(F("Cannot start lift (already mid-sequence)."));
+    }
+
+  } else if (input == "lift_rl") {
+    // See LIFT_RL PREP's block comment above -- runs hip_fl -> knee_rl
+    // -> hip_rl first, then hands off to the normal lift sequence.
+    if (startLiftRLPrep()) {
+      Serial.println(F("lift_rl: running the hip_fl/knee_rl/hip_rl prep sequence first..."));
+    } else {
+      Serial.println(F("Cannot start lift_rl prep (already mid-sequence)."));
     }
 
   } else if (input == "lower") {
@@ -3876,6 +3885,13 @@ void updateRaiseRear() {
 // then rear hips/knees together, checking each stage finished before
 // starting the next (same incremental philosophy as every other new
 // maneuver in this file).
+//
+// A fourth stage (REAR_PREP_FINAL/REAR_PREP_DRIVE) was added by
+// request: all four legs move to a second stance -- hip_fl staying at
+// 90 specifically is what was confirmed (by hand-jogging) to clear
+// the way for RL to lift next -- then the chassis drives forward
+// (REAR_PREP_DRIVE_SPEED/MS). Same slow moveSpeedScale as the rest of
+// rear_prep throughout, requested explicitly ("do these slowly").
 // ============================================================
 #define REAR_PREP_HIP_FL   90
 #define REAR_PREP_KNEE_FL  0
@@ -3886,7 +3902,19 @@ void updateRaiseRear() {
 #define REAR_PREP_HIP_RR   40
 #define REAR_PREP_KNEE_RR  50
 
-enum RearPrepState { REAR_PREP_IDLE, REAR_PREP_FRONT_KNEE, REAR_PREP_FRONT_HIP, REAR_PREP_REAR };
+#define REAR_PREP2_HIP_FL   90
+#define REAR_PREP2_KNEE_FL  60
+#define REAR_PREP2_HIP_FR   88
+#define REAR_PREP2_KNEE_FR  60
+#define REAR_PREP2_HIP_RL   100
+#define REAR_PREP2_KNEE_RL  140
+#define REAR_PREP2_HIP_RR   100
+#define REAR_PREP2_KNEE_RR  140
+
+#define REAR_PREP_DRIVE_SPEED 100
+#define REAR_PREP_DRIVE_MS    400
+
+enum RearPrepState { REAR_PREP_IDLE, REAR_PREP_FRONT_KNEE, REAR_PREP_FRONT_HIP, REAR_PREP_REAR, REAR_PREP_FINAL, REAR_PREP_DRIVE };
 RearPrepState rearPrepState = REAR_PREP_IDLE;
 
 bool startRearPrep() {
@@ -3922,9 +3950,79 @@ void updateRearPrep() {
 
   if (rearPrepState == REAR_PREP_REAR) {
     if (!legMoveDone(RL) || !legMoveDone(RR)) return; // still moving the rear hips/knees
+    setHip(FL, REAR_PREP2_HIP_FL);   setKnee(FL, REAR_PREP2_KNEE_FL);
+    setHip(FR, REAR_PREP2_HIP_FR);   setKnee(FR, REAR_PREP2_KNEE_FR);
+    setHip(RL, REAR_PREP2_HIP_RL);   setKnee(RL, REAR_PREP2_KNEE_RL);
+    setHip(RR, REAR_PREP2_HIP_RR);   setKnee(RR, REAR_PREP2_KNEE_RR);
+    rearPrepState = REAR_PREP_FINAL;
+    return;
+  }
+
+  if (rearPrepState == REAR_PREP_FINAL) {
+    if (!legMoveDone(FL) || !legMoveDone(FR) || !legMoveDone(RL) || !legMoveDone(RR)) return; // still moving into the final stance
+    startDrive(REAR_PREP_DRIVE_SPEED, REAR_PREP_DRIVE_MS);
+    rearPrepState = REAR_PREP_DRIVE;
+    return;
+  }
+
+  if (rearPrepState == REAR_PREP_DRIVE) {
+    if (driveActive) return; // still driving forward
     Serial.println(F("Rear prep complete."));
     moveSpeedScale = 1.0;
     rearPrepState = REAR_PREP_IDLE;
+  }
+}
+
+// ============================================================
+// LIFT_RL PREP: requested directly -- hip_fl=90 was confirmed by hand
+// to be what actually clears the way for RL to lift, so lift_rl now
+// runs this three-step sequence (hip_fl -> knee_rl -> hip_rl, in that
+// exact order, one at a time -- matching the order it was hand-jogged
+// in) before handing off to the normal startLift(RL) sequence.
+// lift_fl/fr/rr are untouched, still going straight to startLift().
+// ============================================================
+#define LIFT_RL_PREP_HIP_FL  90
+#define LIFT_RL_PREP_KNEE_RL 140
+#define LIFT_RL_PREP_HIP_RL  100
+
+enum LiftRLPrepState { LIFT_RL_PREP_IDLE, LIFT_RL_PREP_HIP_FL_STAGE, LIFT_RL_PREP_KNEE_RL_STAGE, LIFT_RL_PREP_HIP_RL_STAGE };
+LiftRLPrepState liftRLPrepState = LIFT_RL_PREP_IDLE;
+
+bool startLiftRLPrep() {
+  if (liftRLPrepState != LIFT_RL_PREP_IDLE) return false;
+  if (liftState != LIFT_IDLE) return false; // don't fight an already-active lift sequence
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // careful, slow motion -- matches the rest of the climb sequence
+  setHip(FL, LIFT_RL_PREP_HIP_FL);
+  liftRLPrepState = LIFT_RL_PREP_HIP_FL_STAGE;
+  return true;
+}
+
+void updateLiftRLPrep() {
+  if (liftRLPrepState == LIFT_RL_PREP_IDLE) return;
+
+  if (liftRLPrepState == LIFT_RL_PREP_HIP_FL_STAGE) {
+    if (!legMoveDone(FL)) return; // still moving hip_fl
+    setKnee(RL, LIFT_RL_PREP_KNEE_RL);
+    liftRLPrepState = LIFT_RL_PREP_KNEE_RL_STAGE;
+    return;
+  }
+
+  if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_STAGE) {
+    if (!legMoveDone(RL)) return; // still moving knee_rl
+    setHip(RL, LIFT_RL_PREP_HIP_RL);
+    liftRLPrepState = LIFT_RL_PREP_HIP_RL_STAGE;
+    return;
+  }
+
+  if (liftRLPrepState == LIFT_RL_PREP_HIP_RL_STAGE) {
+    if (!legMoveDone(RL)) return; // still moving hip_rl
+    liftRLPrepState = LIFT_RL_PREP_IDLE;
+    if (startLift(RL)) {
+      Serial.println(F("lift_rl prep done -- raising to a stable stance before lift..."));
+    } else {
+      moveSpeedScale = 1.0;
+      Serial.println(F("lift_rl prep done, but could not start the lift itself (already mid-sequence)."));
+    }
   }
 }
 
@@ -4426,6 +4524,9 @@ void loop() {
 
   // Step any in-progress rear-prep (front knees -> front hips -> rear hips/knees) forward
   updateRearPrep();
+
+  // Step any in-progress lift_rl prep (hip_fl -> knee_rl -> hip_rl) forward
+  updateLiftRLPrep();
 
   // Step any in-progress rear-wheel lift (RL/RR clear of the ground) forward
   updateRearWheelLift();

@@ -1678,19 +1678,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // above the step's height. Tune this higher if the push recurs.
 #define SECOND_FR_HIP_PEAK 200
 
-// Turn pulses bracketing second_fr's lift-off, requested directly:
-// a brief differential-drive pulse (left wheels one way, right wheels
-// the other -- same mechanism/sign convention as startTurnTest(),
-// positive speed = left forward/right backward) right before FR lifts,
-// to create room for the lift by rotating the chassis slightly. Once
-// FR is up and clear, an identical pulse in REVERSE straightens the
-// chassis back out before the reach/place begins. Speed hardcoded to
+// Right-side-only reverse pulse bracketing second_fr's lift-off,
+// requested directly: FR+RR drive backward (FL+RL stay at 0) right
+// before FR lifts, to physically pull FR's wheel clear of the step
+// face before the knee/hip move -- a straight translation, not a
+// pivot, so FR actually gets clearance instead of just rotating in
+// place. Deliberately does NOT touch FL/RL: FL's wheel is resting on
+// the step with only a few cm of margin at this point, so driving it
+// backward too would risk rolling it back off the step. Once FR is up
+// and clear, an identical pulse forward on the right side only
+// restores position before the reach/place begins. Speed hardcoded to
 // match SQUARE_TURN_SPEED's own value (defined later in the file,
 // after this section, so can't be referenced by name here -- macros
-// must textually precede their first use).
-// Both sides drive at the same power (requested directly, after an
-// earlier attempt at driving the left side harder) -- symmetric pivot
-// via startTurnTest(). Duration bumped 500ms -> 1000ms by request.
+// must textually precede their first use). Duration 1000ms by request.
 #define SECOND_FR_TURN_SPEED      150
 #define SECOND_FR_TURN_MS         1000
 
@@ -1936,16 +1936,15 @@ bool startSecondLegOntoStep(int legToLift) {
     setHip(RL, SECOND_FR_HIP_RL);   setKnee(RL, SECOND_FR_KNEE_RL);
     setHip(RR, SECOND_FR_HIP_RR);   setKnee(RR, SECOND_FR_KNEE_RR);
 
-    // Also a requested turn pulse. Pivoting the chassis (left wheels
-    // forward / right wheels backward, same sign as startTurnTest())
-    // briefly, right before FR starts lifting, creates clearance for
-    // the lift. Once FR is up, an identical pulse in reverse
-    // straightens the chassis back out before the reach/place begins.
-    // LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT -> LIFT_FR_TURN2 bracket
-    // the lift with these two pulses, then hand off to LIFT_FR_RISE
-    // exactly as before.
-    if (!startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
-      Serial.println(F("second_fr aborted: could not start the pre-lift turn (something else active)."));
+    // Also a requested right-side-only reverse pulse (see the comment
+    // on SECOND_FR_TURN_SPEED above): FR+RR back up briefly to pull FR
+    // clear of the step face, FL+RL untouched. Once FR is up, an
+    // identical pulse forward on the right side only restores position
+    // before the reach/place begins. LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT
+    // -> LIFT_FR_TURN2 bracket the lift with these two pulses, then hand
+    // off to LIFT_FR_RISE exactly as before.
+    if (!startTurnTestLR(0, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+      Serial.println(F("second_fr aborted: could not start the pre-lift reverse (something else active)."));
       liftLegIdx = -1;
       liftIsSecondLeg = false;
       return false;
@@ -2764,8 +2763,8 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_FR_TURN1_LEGWAIT) {
     if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together
-    if (!startTurnTest(-SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
-      Serial.println(F("second_fr aborted: could not start the straightening turn (something else active)."));
+    if (!startTurnTestLR(0, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+      Serial.println(F("second_fr aborted: could not start the restore-forward pulse (something else active)."));
       abortLiftSequence();
       return;
     }

@@ -1677,27 +1677,24 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // above the step's height. Tune this higher if the push recurs.
 #define SECOND_FR_HIP_PEAK 200
 
-// Two SEPARATE uses of this speed/duration, both requested directly:
+// Right-side-only reverse pulse right before FR lifts (see
+// LIFT_FR_TURN1 in startSecondLegOntoStep()), requested directly:
+// FR+RR drive backward (FL+RL stay at 0) to physically pull FR's
+// wheel clear of the step face before the knee/hip move -- a straight
+// translation, not a pivot, so FR actually gets clearance instead of
+// just rotating in place. Deliberately does NOT touch FL/RL: FL's
+// wheel is resting on the step with only a few cm of margin at this
+// point, so driving it backward too would risk rolling it back off
+// the step.
 //
-// 1. Right-side-only reverse pulse right before FR lifts (see
-//    LIFT_FR_TURN1 in startSecondLegOntoStep()): FR+RR drive backward
-//    (FL+RL stay at 0) to physically pull FR's wheel clear of the step
-//    face before the knee/hip move -- a straight translation, not a
-//    pivot, so FR actually gets clearance instead of just rotating in
-//    place. Deliberately does NOT touch FL/RL: FL's wheel is resting
-//    on the step with only a few cm of margin at this point, so
-//    driving it backward too would risk rolling it back off the step.
-//    There is NO matching forward pulse after the lift anymore -- an
-//    earlier version restored position with a second pulse right after
-//    lift-off; removed by request, going straight into the lift/reach
-//    instead.
-//
-// 2. A separate correction wiggle AFTER FR is actually placed on the
-//    step (see LIFT_FR_DESCEND/LIFT_FR_POST_WIGGLE) -- a symmetric
-//    pivot via startTurnTest(), to straighten the chassis back out
-//    from whatever drift accumulated while FR's wheel was airborne
-//    and only RR was providing real traction on that side during any
-//    forward driving.
+// Nothing runs after the lift anymore: an earlier version added a
+// restore-forward pulse right after lift-off, then later a separate
+// correction wiggle after FR was placed -- both removed by request.
+// Confirmed on hardware: any wheel motion once a leg is resting on
+// the step (FL's own placement, or FR's after second_fr) risks
+// walking it back off -- so once a foot is down, NOTHING moves,
+// full stop. This pulse is the only wheel motion left in second_fr,
+// and it only ever runs before FR touches the step, never after.
 //
 // Speed hardcoded to match SQUARE_TURN_SPEED's own value (defined
 // later in the file, after this section, so can't be referenced by
@@ -1733,7 +1730,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1, LIFT_FR_POST_WIGGLE };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1 };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
@@ -1952,10 +1949,9 @@ bool startSecondLegOntoStep(int legToLift) {
     // comment on SECOND_FR_TURN_SPEED above): FR+RR back up briefly to
     // pull FR clear of the step face, FL+RL untouched. LIFT_FR_TURN1
     // waits for this to finish, then goes straight into the lift --
-    // the SECOND (restore-forward) pulse that used to follow the lift
-    // has been removed by request. The correction wiggle now runs
-    // AFTER FR is actually placed on the step instead (see
-    // LIFT_FR_DESCEND/LIFT_FR_POST_WIGGLE below).
+    // nothing else moves after that: no restore-forward pulse, no
+    // post-placement wiggle, both removed by request. Once FR is
+    // placed (LIFT_FR_DESCEND), it goes straight to LIFT_HOLDING.
     if (!startTurnTestLR(0, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift reverse (something else active)."));
       liftLegIdx = -1;
@@ -2766,22 +2762,21 @@ void updateLiftSequence() {
           Serial.print(F(" -- if this fires with no real contact, raise SECOND_FR_DESCEND_TILT_DELTA_DEG above these delta values)"));
         }
         Serial.println(F("."));
-        // Correction wiggle only for second_fr (see startSecondLegOntoStep()'s
-        // comment) -- LIFT_FR_DESCEND is shared with FL's own placement
-        // too (same staged technique, leg-agnostic despite the name),
-        // and FL must NOT move at all once its leg is placed. Confirmed
-        // on hardware: this wiggle was firing after FL's placement too
-        // and dragging the just-placed foot back off the step. If the
-        // wiggle can't start for some reason, that's not worth losing a
-        // successful placement over, just go straight to holding.
-        liftState = (liftIsSecondLeg && startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_WIGGLE : LIFT_HOLDING;
+        // No wiggle here (removed by request) -- once EITHER leg is
+        // placed on the step, nothing should move at all. Confirmed on
+        // hardware: even the "just correcting alignment" pivot spun
+        // wheels that were resting on the step (FL and/or FR), walking
+        // the robot backward off it. Any correction second_fr needs has
+        // to happen BEFORE FR touches down (see the pre-lift reverse in
+        // startSecondLegOntoStep()), never after.
+        liftState = LIFT_HOLDING;
         return;
       }
     }
 
     if (liftDescendStepIdx >= LIFT_DESCEND_STEPS) {
       Serial.println(F("Foot placed on step."));
-      liftState = (liftIsSecondLeg && startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) ? LIFT_FR_POST_WIGGLE : LIFT_HOLDING;
+      liftState = LIFT_HOLDING;
       return;
     }
 
@@ -2789,10 +2784,6 @@ void updateLiftSequence() {
     float t = (float)liftDescendStepIdx / (float)LIFT_DESCEND_STEPS;
     int stepHip = liftHipPeak + (int)round((secondFrFinalHip - liftHipPeak) * t);
     setHip(liftLegIdx, stepHip);
-
-  } else if (liftState == LIFT_FR_POST_WIGGLE) {
-    if (turnTestActive) return; // still correcting alignment after placement
-    liftState = LIFT_HOLDING;
 
   } else if (liftState == LIFT_RISE) {
     if (!legMoveDone(liftLegIdx)) return; // settling into the safe lifted pose

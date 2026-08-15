@@ -1715,6 +1715,12 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // already were for this maneuver -- if ground clearance ends up
 // insufficient with this fold direction, LIFT_LIFTED_HIP_FR (the hip
 // target, unchanged here) is the next thing to raise.
+//
+// NOT directly used by second_fr's rise anymore (see LIFT_FR_TURN1/
+// LIFT_FR_CLEAR_RISE): that now computes an IK clear-height lift
+// instead of targeting these fixed angles. Left defined for reference
+// -- the fold-toward-body DIRECTION these represent is still the
+// right idea, just no longer hardcoded as the specific target.
 #define SECOND_FR_SAFE_KNEE 0
 
 // Peak hip angle for second_fr's tuck (replaces LIFT_LIFTED_HIP_FR for
@@ -1727,6 +1733,9 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // instead of swinging over the top. Raising this peak first, before
 // the knee ever extends, is what gives the extend phase clearance
 // above the step's height. Tune this higher if the push recurs.
+//
+// NOT directly used by second_fr's rise anymore -- see
+// SECOND_FR_SAFE_KNEE's comment just above; same reasoning.
 #define SECOND_FR_HIP_PEAK 200
 
 // Pre-lift pivot pulse right before FR lifts (see LIFT_FR_TURN1 in
@@ -1797,7 +1806,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1, LIFT_FR_POST_TURN, LIFT_FR_POST_DRIVE };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1, LIFT_FR_CLEAR_RISE, LIFT_FR_POST_TURN, LIFT_FR_POST_DRIVE };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
@@ -1832,9 +1841,10 @@ int secondFrFinalHip = 0, secondFrFinalKnee = 0;
 
 // The hip angle this specific staged sequence rose to before the knee
 // extended -- LIFT_FR_DESCEND interpolates FROM this value (not a
-// hardcoded one), since different entry points use different peaks
-// (SECOND_FR_HIP_PEAK for second_fr, LIFT_LIFTED_HIP_FL for FL's own
-// step-place).
+// hardcoded one), since different entry points reach different peaks:
+// second_fr's is whatever the IK-computed clear-height lift actually
+// landed on (see LIFT_FR_CLEAR_RISE), FL's own step-place uses the
+// fixed LIFT_LIFTED_HIP_FL.
 int liftHipPeak = 0;
 
 // Returns to idle from anywhere in the sequence (abort or success) --
@@ -1982,28 +1992,26 @@ bool startSecondLegOntoStep(int legToLift) {
   liftUsingVerifiedStance = true;
   liftLegIdx = legToLift;
   if (legToLift == FR) {
-    // FR moves hip and knee SIMULTANEOUSLY here, not knee-first-then-
-    // hip like the general LIFT_KNEE_SAFE path below. Confirmed on
-    // hardware: folding the knee down to SECOND_FR_SAFE_KNEE FIRST,
-    // while the hip is still down at its step-place angle, dips the
-    // foot/wheel toward the ground before the hip ever gets a chance
-    // to lift it clear -- catching the step's underside on the way
-    // through ("gripped the bottom of the step"). Commanding both at
-    // once blends the path instead of dipping through that low point.
+    // FR's rise starts with an IK-computed vertical lift (LIFT_FR_TURN1
+    // -> LIFT_FR_CLEAR_RISE, see that state's comment) to a height
+    // verified clear of both the step and the floor -- replacing an
+    // earlier version that moved hip and knee together to fixed
+    // SECOND_FR_HIP_PEAK/SECOND_FR_SAFE_KNEE angles, picked without
+    // reference to the actual step geometry. That fixed-angle version
+    // itself replaced sequential knee-then-hip staging (confirmed on
+    // hardware: folding the knee down FIRST, while the hip was still
+    // down at its step-place angle, dipped the foot/wheel toward the
+    // ground before the hip ever got a chance to lift it clear --
+    // "gripped the bottom of the step") -- moving hip and knee at the
+    // same time is still the reason this doesn't go through the normal
+    // LIFT_TUCK->LIFT_CLEAR->LIFT_DESCEND path.
     //
-    // Targets SECOND_FR_HIP_PEAK (200), not LIFT_LIFTED_HIP_FR (150) --
-    // see that constant's comment. From here this does NOT go through
-    // the normal LIFT_TUCK->LIFT_CLEAR->LIFT_DESCEND path (that path's
-    // setFoot() reach moves hip and knee together via IK, which is what
-    // let the knee start extending before the hip had actually cleared
-    // the step -- confirmed on hardware as the cause of the push-off).
-    // Instead: LIFT_FR_RISE (this simultaneous tuck-and-rise) ->
-    // LIFT_FR_EXTEND (knee alone reaches forward, hip held at the
-    // peak) -> LIFT_FR_DESCEND (hip alone lowers the foot onto the
-    // step, knee held) -- three single-joint moves instead of one
-    // combined IK move, so the knee never extends until the hip has
-    // already cleared, and the final descent never moves the knee at
-    // all once it's already reaching over the step.
+    // After the clear-height lift: LIFT_FR_RISE solves the real final
+    // target, LIFT_FR_EXTEND reaches the knee forward alone (hip held
+    // at the verified-clear height), LIFT_FR_DESCEND lowers the hip
+    // alone onto the step (knee held) -- so the knee never extends
+    // until the hip has already cleared, and the final descent never
+    // moves the knee at all once it's already reaching over the step.
     //
     // Before any of that: RL/RR swap to SECOND_FR_HIP/KNEE_RL/RR,
     // applied right here (not any earlier -- e.g. not during FL's own
@@ -2776,13 +2784,33 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_FR_TURN1) {
     if (turnTestActive) return; // still pivoting to create lift clearance
-    setKnee(liftLegIdx, SECOND_FR_SAFE_KNEE);
-    setHip(liftLegIdx, SECOND_FR_HIP_PEAK);
-    liftHipPeak = SECOND_FR_HIP_PEAK;
+    // IK-computed vertical lift, not a fixed hip/knee angle pair --
+    // requested directly after the wheel kept catching on the step
+    // edge despite the pivot: reusing SECOND_FR_HIP_PEAK/SAFE_KNEE
+    // (arbitrary constants, never checked against the actual step
+    // geometry) let the foot's real path clip the step on the way up.
+    // computeClearY() -- already used by the original LIFT_CLEAR/
+    // LIFT_TUCK path -- gives a height verified clear of BOTH the
+    // step's own top surface AND the floor. Re-capture liftOrigX/Y for
+    // THIS leg first: they're only ever set for the first leg's own
+    // sequence (LIFT_RAISING), so during second_fr they'd still be
+    // stale from FL otherwise, and computeClearY()'s ground-clearance
+    // term needs FR's real current position, not FL's.
+    legForwardKinematics(liftLegIdx, liftOrigX, liftOrigY);
+    if (!setFoot(liftLegIdx, liftOrigX, computeClearY(), 0)) {
+      Serial.println(F("second_fr aborted: clearance-lift target unreachable."));
+      abortLiftSequence();
+      return;
+    }
+    liftState = LIFT_FR_CLEAR_RISE;
+
+  } else if (liftState == LIFT_FR_CLEAR_RISE) {
+    if (!legMoveDone(liftLegIdx)) return; // still rising straight up to the verified-clear height
+    liftHipPeak = hipPos[liftLegIdx]; // whatever hip angle the IK solve actually landed on -- LIFT_FR_DESCEND interpolates from here
     liftState = LIFT_FR_RISE;
 
   } else if (liftState == LIFT_FR_RISE) {
-    if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together
+    if (!legMoveDone(liftLegIdx)) return; // LIFT_FR_CLEAR_RISE's lift should already be done by the time this is reached, checked again defensively
     // Solve the real final target ONCE here -- same geometry the
     // normal LIFT_CLEAR/LIFT_DESCEND path already uses
     // (liftStepForwardMM, lastCommandedHeight - liftStepHeightMM), just

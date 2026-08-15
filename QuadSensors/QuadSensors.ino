@@ -1678,6 +1678,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // above the step's height. Tune this higher if the push recurs.
 #define SECOND_FR_HIP_PEAK 200
 
+// Turn pulses bracketing second_fr's lift-off, requested directly:
+// a brief differential-drive pulse (left wheels one way, right wheels
+// the other -- same mechanism/sign convention as startTurnTest(),
+// positive speed = left forward/right backward) right before FR lifts,
+// to create room for the lift by rotating the chassis slightly. Once
+// FR is up and clear, an identical pulse in REVERSE straightens the
+// chassis back out before the reach/place begins. Speed hardcoded to
+// match SQUARE_TURN_SPEED's own value (defined later in the file,
+// after this section, so can't be referenced by name here -- macros
+// must textually precede their first use).
+#define SECOND_FR_TURN_SPEED 150
+#define SECOND_FR_TURN_MS    500
+
 // LIFT_FR_DESCEND's own contact-tilt threshold, separate from
 // LIFT_CONTACT_TILT_DELTA_DEG -- confirmed on hardware that reusing
 // the shared 4.0deg threshold false-triggered ("stopped early: contact
@@ -1691,7 +1704,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND, LIFT_FR_TURN1, LIFT_FR_TURN1_LEGWAIT, LIFT_FR_TURN2 };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
@@ -1898,10 +1911,22 @@ bool startSecondLegOntoStep(int legToLift) {
     // combined IK move, so the knee never extends until the hip has
     // already cleared, and the final descent never moves the knee at
     // all once it's already reaching over the step.
-    setKnee(liftLegIdx, SECOND_FR_SAFE_KNEE);
-    setHip(liftLegIdx, SECOND_FR_HIP_PEAK);
-    liftHipPeak = SECOND_FR_HIP_PEAK;
-    liftState = LIFT_FR_RISE;
+    //
+    // Before any of that: a requested turn pulse. Pivoting the chassis
+    // (left wheels forward / right wheels backward, same sign as
+    // startTurnTest()) briefly, right before FR starts lifting, creates
+    // clearance for the lift. Once FR is up, an identical pulse in
+    // reverse straightens the chassis back out before the reach/place
+    // begins. LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT -> LIFT_FR_TURN2
+    // bracket the lift with these two pulses, then hand off to
+    // LIFT_FR_RISE exactly as before.
+    if (!startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+      Serial.println(F("second_fr aborted: could not start the pre-lift turn (something else active)."));
+      liftLegIdx = -1;
+      liftIsSecondLeg = false;
+      return false;
+    }
+    liftState = LIFT_FR_TURN1;
   } else {
     // FL (the other possible legToLift here, if a future second_fl is
     // added) keeps the original knee-first-then-hip sequencing --
@@ -2701,6 +2726,26 @@ void updateLiftSequence() {
       ? "Foot placed on step (stopped early: contact detected via tilt before reaching the full nominal descent)."
       : "Foot placed on step.");
     liftState = LIFT_HOLDING;
+
+  } else if (liftState == LIFT_FR_TURN1) {
+    if (turnTestActive) return; // still pivoting to create lift clearance
+    setKnee(liftLegIdx, SECOND_FR_SAFE_KNEE);
+    setHip(liftLegIdx, SECOND_FR_HIP_PEAK);
+    liftHipPeak = SECOND_FR_HIP_PEAK;
+    liftState = LIFT_FR_TURN1_LEGWAIT;
+
+  } else if (liftState == LIFT_FR_TURN1_LEGWAIT) {
+    if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together
+    if (!startTurnTest(-SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+      Serial.println(F("second_fr aborted: could not start the straightening turn (something else active)."));
+      abortLiftSequence();
+      return;
+    }
+    liftState = LIFT_FR_TURN2;
+
+  } else if (liftState == LIFT_FR_TURN2) {
+    if (turnTestActive) return; // still straightening the chassis back out
+    liftState = LIFT_FR_RISE;
 
   } else if (liftState == LIFT_FR_RISE) {
     if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together

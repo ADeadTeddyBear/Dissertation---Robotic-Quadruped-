@@ -1729,15 +1729,16 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // above the step's height. Tune this higher if the push recurs.
 #define SECOND_FR_HIP_PEAK 200
 
-// Right-side-only reverse pulse right before FR lifts (see
-// LIFT_FR_TURN1 in startSecondLegOntoStep()), requested directly:
-// FR+RR drive backward (FL+RL stay at 0) to physically pull FR's
-// wheel clear of the step face before the knee/hip move -- a straight
-// translation, not a pivot, so FR actually gets clearance instead of
-// just rotating in place. Deliberately does NOT touch FL/RL: FL's
-// wheel is resting on the step with only a few cm of margin at this
-// point, so driving it backward too would risk rolling it back off
-// the step.
+// Pre-lift pivot pulse right before FR lifts (see LIFT_FR_TURN1 in
+// startSecondLegOntoStep()), requested directly: FR+RR drive backward
+// while FL+RL drive FORWARD at the same time. An earlier version left
+// FL+RL at 0 (a straight one-sided translation instead of a pivot, so
+// FR would get real clearance instead of just rotating in place) --
+// reverted after that was confirmed on hardware to make the robot
+// fall over during the pulse, even with active wheel braking added.
+// Driving FL+RL forward is also the safe direction for FL specifically
+// (it's already resting on the step at this point): forward presses
+// it further onto the step rather than risking rolling it back off.
 //
 // Two earlier versions tried extra wheel motion right after lift-off
 // (a restore-forward pulse) and right after placement (a correction
@@ -2009,16 +2010,20 @@ bool startSecondLegOntoStep(int legToLift) {
     setHip(RL, SECOND_FR_HIP_RL);   setKnee(RL, SECOND_FR_KNEE_RL);
     setHip(RR, SECOND_FR_HIP_RR);   setKnee(RR, SECOND_FR_KNEE_RR);
 
-    // Also the requested right-side-only reverse pulse (see the
-    // comment on SECOND_FR_TURN_SPEED above): FR+RR back up briefly to
-    // pull FR clear of the step face, FL+RL untouched. LIFT_FR_TURN1
-    // waits for this to finish, then goes straight into the lift.
-    // Once FR is placed (LIFT_FR_DESCEND), it drives again to
-    // compensate: LIFT_FR_POST_TURN (right wheels forward, mirroring
-    // this reverse) -> LIFT_FR_POST_DRIVE (plain forward drive) ->
-    // LIFT_HOLDING. FL's own placement never goes through those two
-    // states -- see LIFT_FR_DESCEND's liftIsSecondLeg check.
-    if (!startTurnTestLR(0, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+    // Pre-lift pivot pulse (see the comment on SECOND_FR_TURN_SPEED
+    // above): FR+RR back up while FL+RL drive FORWARD at the same
+    // time, requested directly -- a one-sided reverse (FL+RL just
+    // braked, not driven) kept causing the robot to fall over during
+    // this pulse, even with active braking. Driving FL+RL forward is
+    // also the safe direction for FL specifically: it presses FL
+    // further onto the step instead of risking rolling it back off.
+    // LIFT_FR_TURN1 waits for this to finish, then goes straight into
+    // the lift. Once FR is placed (LIFT_FR_DESCEND), it drives again
+    // to compensate: LIFT_FR_POST_TURN (right wheels forward,
+    // mirroring this reverse) -> LIFT_FR_POST_DRIVE (plain forward
+    // drive) -> LIFT_HOLDING. FL's own placement never goes through
+    // those two states -- see LIFT_FR_DESCEND's liftIsSecondLeg check.
+    if (!startTurnTestLR(SECOND_FR_TURN_SPEED, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift reverse (something else active)."));
       liftLegIdx = -1;
       liftIsSecondLeg = false;

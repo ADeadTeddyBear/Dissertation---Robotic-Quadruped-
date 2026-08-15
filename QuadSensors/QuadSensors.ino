@@ -1918,14 +1918,21 @@ bool startSecondLegOntoStep(int legToLift) {
     // already cleared, and the final descent never moves the knee at
     // all once it's already reaching over the step.
     //
-    // Before any of that: a requested turn pulse. Pivoting the chassis
-    // (left wheels forward / right wheels backward, same sign as
-    // startTurnTest()) briefly, right before FR starts lifting, creates
-    // clearance for the lift. Once FR is up, an identical pulse in
-    // reverse straightens the chassis back out before the reach/place
-    // begins. LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT -> LIFT_FR_TURN2
-    // bracket the lift with these two pulses, then hand off to
-    // LIFT_FR_RISE exactly as before.
+    // Before any of that: RL/RR swap to SECOND_FR_HIP/KNEE_RL/RR,
+    // applied right here (not any earlier -- e.g. not during FL's own
+    // createNewStablePlatform() move) so RR takes the more braced
+    // stance to compensate the instant FR starts lifting.
+    setHip(RL, SECOND_FR_HIP_RL);   setKnee(RL, SECOND_FR_KNEE_RL);
+    setHip(RR, SECOND_FR_HIP_RR);   setKnee(RR, SECOND_FR_KNEE_RR);
+
+    // Also a requested turn pulse. Pivoting the chassis (left wheels
+    // forward / right wheels backward, same sign as startTurnTest())
+    // briefly, right before FR starts lifting, creates clearance for
+    // the lift. Once FR is up, an identical pulse in reverse
+    // straightens the chassis back out before the reach/place begins.
+    // LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT -> LIFT_FR_TURN2 bracket
+    // the lift with these two pulses, then hand off to LIFT_FR_RISE
+    // exactly as before.
     if (!startTurnTestLR(SECOND_FR_TURN_LEFT_SPEED, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift turn (something else active)."));
       liftLegIdx = -1;
@@ -2151,14 +2158,21 @@ void commandClimbPose(const ClimbPose &p) {
 // ============================================================
 #define NEW_STABLE_HIP_FR   45
 #define NEW_STABLE_KNEE_FR  170
-// RL/RR swapped by request: RR needs to take the more braced stance
-// (formerly RL's 4/50) to compensate on that side once FR lifts for
-// second_fr -- this stance stays active through both FL's and FR's
-// placement, not just FL's, so the swap covers second_fr too.
-#define NEW_STABLE_HIP_RL   0
-#define NEW_STABLE_KNEE_RL  30
-#define NEW_STABLE_HIP_RR   4
-#define NEW_STABLE_KNEE_RR  50
+#define NEW_STABLE_HIP_RL   4
+#define NEW_STABLE_KNEE_RL  50
+#define NEW_STABLE_HIP_RR   0
+#define NEW_STABLE_KNEE_RR  30
+
+// RL/RR swapped versions of the above, applied ONLY at the moment
+// second_fr starts (see startSecondLegOntoStep()'s FR branch) -- by
+// request, this compensation must NOT be active any earlier (e.g.
+// during FL's own createNewStablePlatform() move), only once FR
+// actually starts lifting. RR takes the more braced stance (formerly
+// RL's 4/50) to compensate on that side once FR lifts.
+#define SECOND_FR_HIP_RL    0
+#define SECOND_FR_KNEE_RL   30
+#define SECOND_FR_HIP_RR    4
+#define SECOND_FR_KNEE_RR   50
 
 bool newStableLiftActive = false;
 

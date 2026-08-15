@@ -3403,9 +3403,27 @@ const int WHEEL_EN_PINS[NUM_HIPS]  = { WHEEL_FL_EN,  WHEEL_FR_EN,  WHEEL_RL_EN, 
 const bool WHEEL_REVERSED[NUM_HIPS] = { true, true, false, false }; // FL, FR, RL, RR
 
 // Sets one wheel's signed speed: positive = forward, negative =
-// reverse, 0 = stop (both IN pins low, coasts rather than brakes).
+// reverse, 0 = ACTIVE BRAKE (both IN pins low, EN driven high) --
+// requested directly after a real hardware failure: a stationary
+// wheel used to mean both IN pins low with EN also at 0%, which
+// disables the H-bridge output entirely and lets the wheel coast
+// freely. Since the chassis is one rigid frame, a wheel left at that
+// old "0 speed" during a partial drive (e.g. second_fr's right-side-
+// only reverse, FL+RL nominally left alone) wasn't actually anchored
+// at all -- it just rolled along, dragged by whichever wheels WERE
+// being driven. Confirmed on hardware: this let the pre-lift reverse
+// pull FL straight off the step even though FL was never itself
+// commanded to move. Both IN pins low with EN driven shorts the motor
+// across the bridge's low-side switches instead, actively resisting
+// rotation rather than floating.
 void setOneWheel(int i, int speed) {
   speed = constrain(speed, -255, 255);
+  if (speed == 0) {
+    digitalWrite(WHEEL_IN1_PINS[i], LOW);
+    digitalWrite(WHEEL_IN2_PINS[i], LOW);
+    analogWrite(WHEEL_EN_PINS[i], 255);
+    return;
+  }
   bool forward = speed > 0;
   bool reverse = speed < 0;
   if (WHEEL_REVERSED[i]) { bool t = forward; forward = reverse; reverse = t; }

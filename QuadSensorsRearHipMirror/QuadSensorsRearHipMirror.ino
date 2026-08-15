@@ -1491,6 +1491,19 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // stance a moment to fully settle before committing to the lift.
 #define LIFT_PRE_LIFT_PAUSE_MS 2000
 
+// Small forward nudge for FL's OWN step-place specifically (not
+// second_fr, which never goes through createNewStablePlatform()/
+// LIFT_REVERSE at all). Confirmed on hardware: switching the stance
+// legs from the sunk measuring pose back to createNewStablePlatform()
+// pulls the chassis away from the step a little as a side effect of
+// the leg-angle change alone -- no wheels move during that switch, but
+// the geometry shift still shows up as real lost ground. Requested
+// directly: nudge forward once the leg is safely lifted and clear
+// (see LIFT_FL_NUDGE_START/WAIT), compensating before the reach math
+// (LIFT_FR_RISE) runs. 300ms at LIFT_APPROACH_SPEED is a starting
+// guess -- not yet hardware-tuned to the actual pull-away distance.
+#define LIFT_FL_NUDGE_MS 300
+
 // Before lifting/tucking the leg for a step-place, reverse away from
 // the step by this much extra clearance (using the wheels, not the
 // legs) -- creates room for the knee-safe/hip-lift swing to happen
@@ -1730,7 +1743,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // real numbers instead of guessed again blindly.
 #define SECOND_FR_DESCEND_TILT_DELTA_DEG 8.0
 
-enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
+enum LiftState { LIFT_IDLE, LIFT_RAISING, LIFT_SHIFTING, LIFT_SETTLING, LIFT_REVERSE, LIFT_REMEASURE_DOWN, LIFT_REMEASURE_UP, LIFT_PRE_LIFT_PAUSE, LIFT_FL_NUDGE_START, LIFT_FL_NUDGE_WAIT, LIFT_KNEE_SAFE, LIFT_TUCK, LIFT_CLEAR, LIFT_DESCEND, LIFT_REACH, LIFT_HOLDING, LIFT_RISE, LIFT_UNTUCK, LIFT_LOWERING, LIFT_FR_RISE, LIFT_FR_EXTEND, LIFT_FR_DESCEND };
 LiftState liftState = LIFT_IDLE;
 unsigned long liftSettleStartMs = 0;
 unsigned long liftPreLiftPauseStartMs = 0; // LIFT_PRE_LIFT_PAUSE's dwell start -- see LIFT_PRE_LIFT_PAUSE_MS
@@ -2633,15 +2646,31 @@ void updateLiftSequence() {
     // body FIRST, while the hip is still down, would dip the foot
     // toward the ground before the hip gets a chance to lift it clear.
     //
-    // Goes straight to LIFT_FR_RISE now (not LIFT_TUCK) -- by request,
-    // FL's own step-place uses the same staged technique already
-    // proven for second_fr: hip rises to a peak FIRST (LIFT_LIFTED_HIP_FL,
-    // now 200), only THEN does the knee extend out, only THEN does the
-    // foot get placed (hip alone lowers). See LIFT_FR_RISE/EXTEND/DESCEND
-    // -- that whole path is leg-agnostic despite the FR-derived name.
+    // Goes to LIFT_FL_NUDGE_START now (not straight to LIFT_FR_RISE) --
+    // by request, FL's own step-place uses the same staged technique
+    // already proven for second_fr: hip rises to a peak FIRST
+    // (LIFT_LIFTED_HIP_FL, now 200), only THEN does the knee extend
+    // out, only THEN does the foot get placed (hip alone lowers). See
+    // LIFT_FR_RISE/EXTEND/DESCEND -- that whole path is leg-agnostic
+    // despite the FR-derived name. LIFT_FL_NUDGE_START/WAIT sits in
+    // between for FL specifically -- see that state's comment.
     setKnee(liftLegIdx, LIFT_SAFE_KNEE_FL);
     setHip(liftLegIdx, LIFT_LIFTED_HIP_FL);
     liftHipPeak = LIFT_LIFTED_HIP_FL;
+    liftState = LIFT_FL_NUDGE_START;
+
+  } else if (liftState == LIFT_FL_NUDGE_START) {
+    if (!legMoveDone(liftLegIdx)) return; // wait for the leg to finish lifting first
+    // Small forward nudge, requested directly -- see LIFT_FL_NUDGE_MS's
+    // comment for why: the createNewStablePlatform() stance-switch
+    // pulls the chassis away from the step a little on its own, and
+    // this compensates for it once the leg is safely up and clear,
+    // before the reach math (LIFT_FR_RISE) runs.
+    startDrive(LIFT_APPROACH_SPEED, LIFT_FL_NUDGE_MS);
+    liftState = LIFT_FL_NUDGE_WAIT;
+
+  } else if (liftState == LIFT_FL_NUDGE_WAIT) {
+    if (driveActive) return;
     liftState = LIFT_FR_RISE;
 
   } else if (liftState == LIFT_KNEE_SAFE) {

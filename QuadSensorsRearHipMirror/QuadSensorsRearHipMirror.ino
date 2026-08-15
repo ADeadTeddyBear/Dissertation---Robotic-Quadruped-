@@ -2117,72 +2117,12 @@ bool checkLiftTiltSafety() {
 }
 
 // ============================================================
-// VERIFIED CLIMB TIERS (FL lift only)
-// Three complete, hand-verified pose sets spanning the low/mid/tall
-// range tested directly on hardware, each confirmed level by the real
-// IMU (not the analytic model -- that's confirmed unreliable at these
-// large angles, especially for RL/RR, see LEG_CALF_MM's comment).
-// Each tier has a PREP pose (FL still down at its rest position, other
-// three legs in their tested position) and a LIFT pose (FL raised/
-// extended, others unchanged or minimally adjusted, matching exactly
-// what was verified). Selected entirely by name (low/mid/tall), not by
-// any computed height -- there isn't yet a trustworthy way to map a
-// detected step height onto one of these three tiers automatically,
-// so for now the operator picks the tier that matches the step in
-// front of the robot.
-//
-// Commanded as raw hip/knee angles via commandClimbPose(), bypassing
-// solveLegIK()/setFoot() entirely for all four legs, the same
-// reasoning as the earlier PRECLIMB_* stance: the model cannot be
-// trusted to reproduce or verify poses at this angle range.
-//
-// (ClimbPose itself is declared near the top of the file, right after
-// the #includes -- Arduino auto-generates a forward declaration for
-// commandClimbPose() right after the #includes too, and that
-// declaration needs ClimbPose to already be a known type at that
-// point, not just here where it's actually used.)
-// ============================================================
-const ClimbPose CLIMB_PREP_LOW  = {  95, 110,  95, 120,   0,  20,  10,  20 }; // Pitch -0.3 Roll 2.9 -> Level
-const ClimbPose CLIMB_LIFT_LOW  = { 200, 110,  92, 120,   0,  20,   0,  20 }; // Pitch  0.9 Roll 2.1 -> Level
-const ClimbPose CLIMB_PREP_MID  = {  92, 100,  92, 108,   0,  50,   0,  55 }; // Pitch  1.9 Roll 2.5 -> Level
-const ClimbPose CLIMB_LIFT_MID  = { 200, 100,  88, 108,   0,  50,   0,  48 }; // Pitch  2.5 Roll 1.9 -> Level
-const ClimbPose CLIMB_PREP_TALL = { 150, 270,  60, 150,   0,  80,   0,  80 }; // Pitch  2.0 Roll 0.8 -> Level (FL knee in a "safe spot", not yet extended)
-const ClimbPose CLIMB_LIFT_TALL = { 150, 145,  60, 150,   0,  80,   0,  80 }; // Pitch  2.8 Roll 1.1 -> Level (FL knee swings to fully extended)
-
-// ============================================================
-// REAR RR PREP (three-stage, hand-confirmed) -- picks up AFTER FL and
-// FR are already placed on the step (via auto step placement +
-// second_fr) and the chassis has driven forward over the step. Gets
-// RL lifted, then placed on the step, then leans the whole stance
-// forward into the confirmed-stable stance for prepping RR (the last
-// wheel) to lift -- three separate hand-verified checkpoints, run one
-// at a time (same reasoning as CLIMB_PREP/CLIMB_LIFT being separate
-// commands, not auto-chained): check stability after each before
-// sending the next, rather than one blind combined jump through all
-// three.
-//
-// These are the exact angles reported from hand-jogging on real
-// hardware. The POSES themselves are hand-confirmed; running them via
-// commandClimbPose() (one combined synced move per stage, with the
-// same tilt-abort net CLIMB_PREP/LIFT use) is NOT the same path as the
-// many small manual jogs that found them -- UNTESTED via this
-// automated path specifically. Watch closely, especially the first
-// time through each stage.
-// ============================================================
-const ClimbPose REAR_RL_LIFT = { 100, 100, 120, 100,  4, 270, 70, 120 }; // RL lifted clear, confirmed safe stance
-const ClimbPose REAR_RL_PLACE = {  80, 100, 120,  60, 15, 230, 70, 120 }; // RL placed on the step
-const ClimbPose REAR_RR_PREP = { 140, 140, 120,  80, 30, 235, 50, 160 }; // weight leaned forward, nearly stable, ready to prep lifting RR
-
-// ============================================================
-// REAR KNEE-LURCH START -- a different, newer approach to the rear
-// wheel lift than REAR_RL_LIFT/PLACE/PREP above (that older sequence
-// is left in place, not removed, until this one is confirmed to
-// replace it). Both FL and FR already up on the step, chassis driven
-// forward over it -- the confirmed-stable starting point for the new
-// technique: extending RL's knee alone (not a combined hip+knee move)
-// to deliberately let the body's centre of mass lurch forward, rather
-// than trying to keep the body perfectly controlled/balanced through
-// the whole rear lift the way the older approach did.
+// REAR KNEE-LURCH START -- picks up AFTER FL and FR are already
+// placed on the step (via auto step placement + second_fr) and the
+// chassis has driven forward over it: extending RL's knee alone (not
+// a combined hip+knee move) deliberately lets the body's centre of
+// mass lurch forward, rather than trying to keep the body perfectly
+// controlled/balanced through the whole rear lift.
 //
 // Split into two explicit stages by request, rather than one combined
 // jump straight to RL's already-extended target: REAR_LEGS_SHARED_START
@@ -2192,11 +2132,9 @@ const ClimbPose REAR_RR_PREP = { 140, 140, 120,  80, 30, 235, 50, 160 }; // weig
 // before doing anything else. Only THEN, as a separate deliberate
 // step, does RL alone extend its knee toward 270 to start the lurch
 // -- use knee_rl 270 directly (a single-joint jog is all this needs,
-// no new command required). REAR_KNEE_LURCH_START itself (the old
-// one-shot combined pose) is left in place, not removed.
+// no new command required).
 // ============================================================
 const ClimbPose REAR_LEGS_SHARED_START = { 65, 0, 65, 0, 50, 140, 50, 140 }; // both front legs up on the step; RL and RR at the SAME shared pose, not yet diverging
-const ClimbPose REAR_KNEE_LURCH_START = { 65, 0, 65, 0, 50, 270, 50, 140 }; // both front legs up on the step, confirmed stable, ready to extend RL's knee
 
 bool climbMoveActive = false;
 unsigned long lastClimbTiltCheckMs = 0;
@@ -3218,49 +3156,9 @@ void handleCommand(String input) {
       Serial.print(F("#define PRECLIMB_KNEE_")); Serial.print(legNames[i]); Serial.print(F("  ")); Serial.println(kneePos[i]);
     }
 
-  } else if (input == "climb_low_prep") {
-    commandClimbPose(CLIMB_PREP_LOW);
-    Serial.println(F("Commanding CLIMB_PREP_LOW."));
-
-  } else if (input == "climb_low_lift") {
-    commandClimbPose(CLIMB_LIFT_LOW);
-    Serial.println(F("Commanding CLIMB_LIFT_LOW."));
-
-  } else if (input == "climb_mid_prep") {
-    commandClimbPose(CLIMB_PREP_MID);
-    Serial.println(F("Commanding CLIMB_PREP_MID."));
-
-  } else if (input == "climb_mid_lift") {
-    commandClimbPose(CLIMB_LIFT_MID);
-    Serial.println(F("Commanding CLIMB_LIFT_MID."));
-
-  } else if (input == "climb_tall_prep") {
-    commandClimbPose(CLIMB_PREP_TALL);
-    Serial.println(F("Commanding CLIMB_PREP_TALL."));
-
-  } else if (input == "climb_tall_lift") {
-    commandClimbPose(CLIMB_LIFT_TALL);
-    Serial.println(F("Commanding CLIMB_LIFT_TALL."));
-
-  } else if (input == "rear_rl_lift") {
-    commandClimbPose(REAR_RL_LIFT);
-    Serial.println(F("Commanding REAR_RL_LIFT -- UNTESTED via this automated path, watch closely."));
-
-  } else if (input == "rear_rl_place") {
-    commandClimbPose(REAR_RL_PLACE);
-    Serial.println(F("Commanding REAR_RL_PLACE -- UNTESTED via this automated path, watch closely."));
-
-  } else if (input == "rear_rr_prep") {
-    commandClimbPose(REAR_RR_PREP);
-    Serial.println(F("Commanding REAR_RR_PREP -- UNTESTED via this automated path, watch closely."));
-
   } else if (input == "rear_legs_shared_start") {
     commandClimbPose(REAR_LEGS_SHARED_START);
     Serial.println(F("Commanding REAR_LEGS_SHARED_START -- RL and RR moving to the same shared pose together. Wait for 'Climb pose reached.' (all four legs settled) before sending knee_rl 270 to start the lurch."));
-
-  } else if (input == "rear_knee_lurch_start") {
-    commandClimbPose(REAR_KNEE_LURCH_START);
-    Serial.println(F("Commanding REAR_KNEE_LURCH_START -- both front legs up on the step, ready for the RL knee-lurch technique. UNTESTED via this automated path, watch closely."));
 
   } else if (input == "new_stable_lift") {
     commandNewStableLift();
@@ -3284,7 +3182,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | rear_legs_shared_start | rear_knee_lurch_start | new_stable_lift | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | angles | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_legs_shared_start | new_stable_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -3294,7 +3192,10 @@ void handleCommand(String input) {
       Serial.println(F("Cannot start scan (already scanning, or a stand move is already in progress)."));
     }
 
-  } else if (input == "stand") {
+  }
+  /* "stand" command removed by request -- kept here, commented out,
+     in case it's needed again.
+  else if (input == "stand") {
     if (startStandMove(1.0)) {
       Serial.println(F("Standing up..."));
     } else if (standProgress >= 1.0) {
@@ -3302,8 +3203,9 @@ void handleCommand(String input) {
     } else {
       Serial.println(F("Already moving."));
     }
-
-  } else if (input.startsWith("stand ")) {
+  }
+  */
+  else if (input.startsWith("stand ")) {
     float pct = constrain(input.substring(6).toFloat(), 0.0, 100.0);
     if (startStandMove(pct / 100.0)) {
       Serial.print(F("Moving to ")); Serial.print(pct); Serial.println(F("% stand..."));
@@ -3317,41 +3219,6 @@ void handleCommand(String input) {
       Serial.println(F("Raising to a stable stance before lift..."));
     } else {
       Serial.println(F("Cannot start lift (already mid-sequence)."));
-    }
-
-  } else if (input.startsWith("step_fl ") || input.startsWith("step_fr ") ||
-             input.startsWith("step_rl ") || input.startsWith("step_rr ")) {
-    int legIdx = input.startsWith("step_fl ") ? FL :
-                 input.startsWith("step_fr ") ? FR :
-                 input.startsWith("step_rl ") ? RL : RR;
-    String rest = input.substring(8);
-    int    sep  = rest.indexOf(' ');
-    if (sep > 0) {
-      float forwardMM = rest.substring(0, sep).toFloat();
-      float heightMM  = rest.substring(sep + 1).toFloat();
-      if (startPlaceOnStep(legIdx, forwardMM, heightMM)) {
-        Serial.println(F("Raising to a stable stance before step placement..."));
-      } else {
-        Serial.println(F("Cannot start step placement (already mid-sequence)."));
-      }
-    } else {
-      Serial.println(F("Usage: step_fl/fr/rl/rr <forward_mm> <step_height_mm>"));
-    }
-
-  } else if (input == "step_scan_fl" || input == "step_scan_fr" ||
-             input == "step_scan_rl" || input == "step_scan_rr") {
-    if (!lastDetectedStepValid) {
-      Serial.println(F("No step estimate yet -- run stand_sweep first and watch for an estimated-step line."));
-    } else {
-      int legIdx = (input == "step_scan_fl") ? FL : (input == "step_scan_fr") ? FR :
-                   (input == "step_scan_rl") ? RL : RR;
-      Serial.print(F("Using last scan estimate: height~")); Serial.print(lastDetectedStepHeightMM, 0);
-      Serial.print(F("mm at ~")); Serial.print(lastDetectedStepForwardMM, 0); Serial.println(F("mm forward."));
-      if (startPlaceOnStep(legIdx, lastDetectedStepForwardMM, lastDetectedStepHeightMM)) {
-        Serial.println(F("Raising to a stable stance before step placement..."));
-      } else {
-        Serial.println(F("Cannot start step placement (already mid-sequence)."));
-      }
     }
 
   } else if (input == "lower") {
@@ -3441,13 +3308,6 @@ void handleCommand(String input) {
     if (raiseRearState != RAISE_REAR_IDLE) stopRaiseRear(); // also cancels an in-progress raise_rear
     Serial.println(F("Wheels stopped."));
 
-  } else if (input == "square") {
-    if (startSquareUp()) {
-      Serial.println(F("Squaring up (turning until ToF1/ToF2 agree)..."));
-    } else {
-      Serial.println(F("Cannot start square-up (already running, a drive is active, or ToF1/ToF2 reading is invalid)."));
-    }
-
   } else if (input.startsWith("turn_test ")) {
     String rest = input.substring(10);
     int    sep  = rest.indexOf(' ');
@@ -3461,34 +3321,6 @@ void handleCommand(String input) {
       }
     } else {
       Serial.println(F("Usage: turn_test <speed -255..255> <duration_ms>"));
-    }
-
-  } else if (input.startsWith("all ")) {
-    int angle = input.substring(4).toInt();
-    allHips(angle);
-    Serial.print(F("All hips -> ")); Serial.println(angle);
-
-  } else if (input.startsWith("foot_fl ") || input.startsWith("foot_fr ") ||
-             input.startsWith("foot_rl ") || input.startsWith("foot_rr ")) {
-    int legIdx = input.startsWith("foot_fl ") ? FL :
-                 input.startsWith("foot_fr ") ? FR :
-                 input.startsWith("foot_rl ") ? RL : RR;
-    const char *legName = (legIdx == FL) ? "foot_fl" :
-                          (legIdx == FR) ? "foot_fr" :
-                          (legIdx == RL) ? "foot_rl" : "foot_rr";
-    String rest = input.substring(8);
-    int    sep  = rest.indexOf(' ');
-    if (sep > 0) {
-      float x = rest.substring(0, sep).toFloat();
-      float y = rest.substring(sep + 1).toFloat();
-      if (setFoot(legIdx, x, y)) {
-        Serial.print(legName); Serial.print(F(" -> hip=")); Serial.print(hipPos[legIdx]);
-        Serial.print(F(" knee=")); Serial.println(kneePos[legIdx]);
-      } else {
-        Serial.print(legName); Serial.println(F(" target unreachable."));
-      }
-    } else {
-      Serial.print(F("Usage: ")); Serial.print(legName); Serial.println(F(" <x_mm> <y_mm>"));
     }
 
   } else {

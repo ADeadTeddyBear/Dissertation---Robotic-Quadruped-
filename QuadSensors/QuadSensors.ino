@@ -2151,10 +2151,14 @@ void commandClimbPose(const ClimbPose &p) {
 // ============================================================
 #define NEW_STABLE_HIP_FR   45
 #define NEW_STABLE_KNEE_FR  170
-#define NEW_STABLE_HIP_RL   4
-#define NEW_STABLE_KNEE_RL  50
-#define NEW_STABLE_HIP_RR   0
-#define NEW_STABLE_KNEE_RR  30
+// RL/RR swapped by request: RR needs to take the more braced stance
+// (formerly RL's 4/50) to compensate on that side once FR lifts for
+// second_fr -- this stance stays active through both FL's and FR's
+// placement, not just FL's, so the swap covers second_fr too.
+#define NEW_STABLE_HIP_RL   0
+#define NEW_STABLE_KNEE_RL  30
+#define NEW_STABLE_HIP_RR   4
+#define NEW_STABLE_KNEE_RR  50
 
 bool newStableLiftActive = false;
 

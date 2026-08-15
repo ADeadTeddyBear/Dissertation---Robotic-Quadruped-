@@ -1736,7 +1736,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // everywhere else in this file -- accepted anyway for the extra
 // clearance. Kept small ("a tiny amount") to limit that exposure.
 #define SECOND_FR_PRE_REVERSE_SPEED 150
-#define SECOND_FR_PRE_REVERSE_MS    300
+#define SECOND_FR_PRE_REVERSE_MS    500
 
 // Plain forward drive of all four wheels, right after FR's placement,
 // before the post-placement turn-back above -- requested directly.

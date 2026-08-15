@@ -1447,9 +1447,10 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // the geometry shift still shows up as real lost ground. Requested
 // directly: nudge forward once the leg is safely lifted and clear
 // (see LIFT_FL_NUDGE_START/WAIT), compensating before the reach math
-// (LIFT_FR_RISE) runs. 300ms at LIFT_APPROACH_SPEED is a starting
-// guess -- not yet hardware-tuned to the actual pull-away distance.
-#define LIFT_FL_NUDGE_MS 300
+// (LIFT_FR_RISE) runs. Bumped 300ms -> 450ms by request ("a little
+// more") -- still a starting guess, not yet hardware-tuned to the
+// actual pull-away distance.
+#define LIFT_FL_NUDGE_MS 450
 
 // Before lifting/tucking the leg for a step-place, reverse away from
 // the step by this much extra clearance (using the wheels, not the
@@ -2753,6 +2754,16 @@ void updateLiftSequence() {
       abortLiftSequence();
       return;
     }
+    // Also drive the knee explicitly to 0 (fully folded toward the
+    // body) at the same time as the hip lift above, requested
+    // directly -- makes sure the knee reaches this fold BEFORE the leg
+    // finishes lifting, not left wherever setFoot()'s IK solve happened
+    // to put it. This overrides setFoot()'s own knee target; the hip
+    // target above was solved assuming a different knee angle, so the
+    // foot won't land at EXACTLY computeClearY() once the knee reaches
+    // 0 instead of that -- close enough in practice, and the fold-
+    // toward-body direction matters more here than the exact height.
+    setKnee(liftLegIdx, 0);
     liftState = LIFT_FR_CLEAR_RISE;
 
   } else if (liftState == LIFT_FR_CLEAR_RISE) {

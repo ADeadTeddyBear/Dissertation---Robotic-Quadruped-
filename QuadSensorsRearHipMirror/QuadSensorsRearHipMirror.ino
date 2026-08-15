@@ -3978,7 +3978,13 @@ void updateRearPrep() {
 // to be what actually clears the way for RL to lift, so lift_rl now
 // runs this three-step sequence (hip_fl -> knee_rl -> hip_rl, in that
 // exact order, one at a time -- matching the order it was hand-jogged
-// in) before handing off to the normal startLift(RL) sequence.
+// in) and then stops. This runs after rear_prep, so liftState is
+// LIFT_HOLDING (not LIFT_IDLE) at the time -- it must NOT chain into
+// startLift(RL): that begins with startStandMove()/createStablePlatform(),
+// which resets every joint back through the stand-progress interpolation
+// and undoes all the careful positioning from rear_prep. See the
+// REAR WHEEL LIFT comment below, which already documents lift_fl/fr/rl/rr
+// as unsafe to send after raise_rear for exactly this reason.
 // lift_fl/fr/rr are untouched, still going straight to startLift().
 // ============================================================
 #define LIFT_RL_PREP_HIP_FL  90
@@ -3990,7 +3996,7 @@ LiftRLPrepState liftRLPrepState = LIFT_RL_PREP_IDLE;
 
 bool startLiftRLPrep() {
   if (liftRLPrepState != LIFT_RL_PREP_IDLE) return false;
-  if (liftState != LIFT_IDLE) return false; // don't fight an already-active lift sequence
+  if (liftState != LIFT_HOLDING) return false; // expects to run after rear_prep, once a leg is already holding on the step
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // careful, slow motion -- matches the rest of the climb sequence
   setHip(FL, LIFT_RL_PREP_HIP_FL);
   liftRLPrepState = LIFT_RL_PREP_HIP_FL_STAGE;
@@ -4016,13 +4022,9 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_HIP_RL_STAGE) {
     if (!legMoveDone(RL)) return; // still moving hip_rl
+    Serial.println(F("lift_rl prep complete."));
+    moveSpeedScale = 1.0;
     liftRLPrepState = LIFT_RL_PREP_IDLE;
-    if (startLift(RL)) {
-      Serial.println(F("lift_rl prep done -- raising to a stable stance before lift..."));
-    } else {
-      moveSpeedScale = 1.0;
-      Serial.println(F("lift_rl prep done, but could not start the lift itself (already mid-sequence)."));
-    }
   }
 }
 

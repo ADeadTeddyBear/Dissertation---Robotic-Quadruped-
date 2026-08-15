@@ -1749,6 +1749,20 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 #define SECOND_FR_TURN_LEFT_SPEED 200
 #define SECOND_FR_TURN_MS         500
 
+// RL/RR swap applied ONLY at the moment second_fr starts (see
+// startSecondLegOntoStep()'s FR branch below) -- by request, this
+// compensation must NOT be active any earlier (e.g. during FL's own
+// createNewStablePlatform() move), only once FR actually starts
+// lifting. RR takes the more braced stance (formerly RL's 4/50) to
+// compensate on that side once FR lifts. Defined here (not next to
+// NEW_STABLE_* further down) because macros must textually precede
+// their first use, and startSecondLegOntoStep() uses these above that
+// point in the file.
+#define SECOND_FR_HIP_RL    0
+#define SECOND_FR_KNEE_RL   30
+#define SECOND_FR_HIP_RR    4
+#define SECOND_FR_KNEE_RR   50
+
 // LIFT_FR_DESCEND's own contact-tilt threshold, separate from
 // LIFT_CONTACT_TILT_DELTA_DEG -- confirmed on hardware that reusing
 // the shared 4.0deg threshold false-triggered ("stopped early: contact
@@ -2214,17 +2228,10 @@ void commandClimbPose(const ClimbPose &p) {
 #define NEW_STABLE_KNEE_RL  50
 #define NEW_STABLE_HIP_RR   0
 #define NEW_STABLE_KNEE_RR  30
-
-// RL/RR swapped versions of the above, applied ONLY at the moment
-// second_fr starts (see startSecondLegOntoStep()'s FR branch) -- by
-// request, this compensation must NOT be active any earlier (e.g.
-// during FL's own createNewStablePlatform() move), only once FR
-// actually starts lifting. RR takes the more braced stance (formerly
-// RL's 4/50) to compensate on that side once FR lifts.
-#define SECOND_FR_HIP_RL    0
-#define SECOND_FR_KNEE_RL   30
-#define SECOND_FR_HIP_RR    4
-#define SECOND_FR_KNEE_RR   50
+// SECOND_FR_HIP/KNEE_RL/RR (the swapped compensation applied only at
+// second_fr) are defined earlier in the file, next to
+// SECOND_FR_TURN_SPEED -- macros must textually precede their first
+// use, and startSecondLegOntoStep() uses them above this point.
 
 bool newStableLiftActive = false;
 

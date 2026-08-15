@@ -3147,7 +3147,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | angles | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_legs_shared_start | new_stable_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | angles | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_prep | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_legs_shared_start | new_stable_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {
@@ -3213,6 +3213,13 @@ void handleCommand(String input) {
   } else if (input == "raise_rear_stop") {
     stopRaiseRear();
     Serial.println(F("Raise rear stopped."));
+
+  } else if (input == "rear_prep") {
+    if (startRearPrep()) {
+      Serial.println(F("Rear prep: front knees, then front hips, then rear hips/knees..."));
+    } else {
+      Serial.println(F("Cannot start rear prep (already in progress, or front legs not down-and-holding)."));
+    }
 
   } else if (input == "rear_wheel_lift_rl" || input == "rear_wheel_lift_rr") {
     // See REAR WHEEL LIFT's block comment above -- do NOT use lift_rl/
@@ -3694,6 +3701,65 @@ void updateRaiseRear() {
     }
 
     raiseRearState = RAISE_REAR_STEPPING;
+  }
+}
+
+// ============================================================
+// REAR PREP: preparation stance for lifting a rear leg, requested
+// directly with these exact hand-jogged angles. Staged in three
+// steps, not one combined move -- front knees first, then front hips,
+// then rear hips/knees together, checking each stage finished before
+// starting the next (same incremental philosophy as every other new
+// maneuver in this file).
+// ============================================================
+#define REAR_PREP_HIP_FL   90
+#define REAR_PREP_KNEE_FL  0
+#define REAR_PREP_HIP_FR   88
+#define REAR_PREP_KNEE_FR  0
+#define REAR_PREP_HIP_RL   40
+#define REAR_PREP_KNEE_RL  30
+#define REAR_PREP_HIP_RR   40
+#define REAR_PREP_KNEE_RR  50
+
+enum RearPrepState { REAR_PREP_IDLE, REAR_PREP_FRONT_KNEE, REAR_PREP_FRONT_HIP, REAR_PREP_REAR };
+RearPrepState rearPrepState = REAR_PREP_IDLE;
+
+bool startRearPrep() {
+  if (rearPrepState != REAR_PREP_IDLE) return false;
+  if (liftState != LIFT_HOLDING) return false; // expects both front legs already down and holding on the step
+  moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // careful, slow motion -- matches the rest of the climb sequence
+  setKnee(FL, REAR_PREP_KNEE_FL);
+  setKnee(FR, REAR_PREP_KNEE_FR);
+  rearPrepState = REAR_PREP_FRONT_KNEE;
+  return true;
+}
+
+void updateRearPrep() {
+  if (rearPrepState == REAR_PREP_IDLE) return;
+
+  if (rearPrepState == REAR_PREP_FRONT_KNEE) {
+    if (!legMoveDone(FL) || !legMoveDone(FR)) return; // still moving the front knees
+    setHip(FL, REAR_PREP_HIP_FL);
+    setHip(FR, REAR_PREP_HIP_FR);
+    rearPrepState = REAR_PREP_FRONT_HIP;
+    return;
+  }
+
+  if (rearPrepState == REAR_PREP_FRONT_HIP) {
+    if (!legMoveDone(FL) || !legMoveDone(FR)) return; // still moving the front hips
+    setHip(RL, REAR_PREP_HIP_RL);
+    setHip(RR, REAR_PREP_HIP_RR);
+    setKnee(RL, REAR_PREP_KNEE_RL);
+    setKnee(RR, REAR_PREP_KNEE_RR);
+    rearPrepState = REAR_PREP_REAR;
+    return;
+  }
+
+  if (rearPrepState == REAR_PREP_REAR) {
+    if (!legMoveDone(RL) || !legMoveDone(RR)) return; // still moving the rear hips/knees
+    Serial.println(F("Rear prep complete."));
+    moveSpeedScale = 1.0;
+    rearPrepState = REAR_PREP_IDLE;
   }
 }
 
@@ -4192,6 +4258,9 @@ void loop() {
 
   // Step any in-progress rear-raise (extend RL/RR toward level) forward
   updateRaiseRear();
+
+  // Step any in-progress rear-prep (front knees -> front hips -> rear hips/knees) forward
+  updateRearPrep();
 
   // Step any in-progress rear-wheel lift (RL/RR clear of the ground) forward
   updateRearWheelLift();

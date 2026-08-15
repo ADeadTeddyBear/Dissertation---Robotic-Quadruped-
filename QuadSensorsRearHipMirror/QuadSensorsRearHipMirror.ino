@@ -1740,14 +1740,11 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // match SQUARE_TURN_SPEED's own value (defined later in the file,
 // after this section, so can't be referenced by name here -- macros
 // must textually precede their first use).
-// Left side drives harder than the right during this pulse (requested
-// directly) -- SECOND_FR_TURN_LEFT_SPEED only bumps the left wheels'
-// magnitude, the right side still moves at SECOND_FR_TURN_SPEED.
-// 200 is an UNTESTED starting bump from the prior symmetric 150; tune
-// on hardware based on how much extra clearance it actually buys.
+// Both sides drive at the same power (requested directly, after an
+// earlier attempt at driving the left side harder) -- symmetric pivot
+// via startTurnTest(). Duration bumped 500ms -> 1000ms by request.
 #define SECOND_FR_TURN_SPEED      150
-#define SECOND_FR_TURN_LEFT_SPEED 200
-#define SECOND_FR_TURN_MS         500
+#define SECOND_FR_TURN_MS         1000
 
 // RL/RR swap applied ONLY at the moment second_fr starts (see
 // startSecondLegOntoStep()'s FR branch below) -- by request, this
@@ -1999,7 +1996,7 @@ bool startSecondLegOntoStep(int legToLift) {
     // LIFT_FR_TURN1 -> LIFT_FR_TURN1_LEGWAIT -> LIFT_FR_TURN2 bracket
     // the lift with these two pulses, then hand off to LIFT_FR_RISE
     // exactly as before.
-    if (!startTurnTestLR(SECOND_FR_TURN_LEFT_SPEED, -SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+    if (!startTurnTest(SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the pre-lift turn (something else active)."));
       liftLegIdx = -1;
       liftIsSecondLeg = false;
@@ -2819,7 +2816,7 @@ void updateLiftSequence() {
 
   } else if (liftState == LIFT_FR_TURN1_LEGWAIT) {
     if (!legMoveDone(liftLegIdx)) return; // still tucking the knee and rising the hip together
-    if (!startTurnTestLR(-SECOND_FR_TURN_LEFT_SPEED, SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
+    if (!startTurnTest(-SECOND_FR_TURN_SPEED, SECOND_FR_TURN_MS)) {
       Serial.println(F("second_fr aborted: could not start the straightening turn (something else active)."));
       abortLiftSequence();
       return;

@@ -1761,7 +1761,7 @@ void findBestStabilityShift(float bx[3], float by[3], float lx[3], float ly[3], 
 // name here -- macros must textually precede their first use).
 // Duration 1000ms by request.
 #define SECOND_FR_TURN_SPEED      150
-#define SECOND_FR_TURN_MS         1000
+#define SECOND_FR_TURN_MS         1300
 
 // Plain forward drive of all four wheels, right after FR's post-
 // placement compensation turn above -- requested directly.

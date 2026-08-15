@@ -3922,24 +3922,46 @@ void updateRearPrep() {
 }
 
 // ============================================================
-// LIFT_RL PREP: requested directly -- hip_fl=90 was confirmed by hand
-// to be what actually clears the way for RL to lift, so lift_rl now
-// runs this three-step sequence (hip_fl -> knee_rl -> hip_rl, in that
-// exact order, one at a time -- matching the order it was hand-jogged
-// in) and then stops. This runs after rear_prep, so liftState is
-// LIFT_HOLDING (not LIFT_IDLE) at the time -- it must NOT chain into
-// startLift(RL): that begins with startStandMove()/createStablePlatform(),
-// which resets every joint back through the stand-progress interpolation
-// and undoes all the careful positioning from rear_prep. See the
-// REAR WHEEL LIFT comment below, which already documents lift_fl/fr/rl/rr
-// as unsafe to send after raise_rear for exactly this reason.
+// LIFT_RL PREP: requested directly, hand-jogged from the pose rear_prep
+// leaves the robot in (hip_fl=90/knee_fl=60, hip_fr=88/knee_fr=60,
+// hip_rl=100/knee_rl=140, hip_rr=100/knee_rr=140). Pulls FL back and in
+// (hip_fl -> 60, knee_fl -> 40) to shift weight off the front-left corner,
+// then swings knee_rl through 20 -> 270 -> 200 to lift RL and place it on
+// the step, then drives forward to seat it -- in that exact order, one
+// joint move at a time, matching how it was hand-jogged. Confirmed on
+// hardware: RL ends up on the step.
+//
+// An earlier version of this prep (hip_fl -> knee_rl -> hip_rl, all
+// values already matching where rear_prep leaves the robot) was a no-op
+// -- it never actually moved anything, hence no tilt on hardware. This
+// replaces it with the real sequence.
+//
+// Runs after rear_prep, so liftState is LIFT_HOLDING (not LIFT_IDLE) at
+// the time -- it must NOT chain into startLift(RL): that begins with
+// startStandMove()/createStablePlatform(), which resets every joint back
+// through the stand-progress interpolation and undoes all the careful
+// positioning from rear_prep. See the REAR WHEEL LIFT comment below,
+// which already documents lift_fl/fr/rl/rr as unsafe to send after
+// raise_rear for exactly this reason.
 // lift_fl/fr/rr are untouched, still going straight to startLift().
 // ============================================================
-#define LIFT_RL_PREP_HIP_FL  90
-#define LIFT_RL_PREP_KNEE_RL 140
-#define LIFT_RL_PREP_HIP_RL  100
+#define LIFT_RL_PREP_HIP_FL       60
+#define LIFT_RL_PREP_KNEE_FL      40
+#define LIFT_RL_PREP_KNEE_RL_1    20  // retract
+#define LIFT_RL_PREP_KNEE_RL_2    270 // swing out and up onto the step
+#define LIFT_RL_PREP_KNEE_RL_3    200 // settle onto the step
+#define LIFT_RL_PREP_DRIVE_SPEED  100
+#define LIFT_RL_PREP_DRIVE_MS     2000 // hand-jogged as two separate 1000ms drives back to back -- combined into one continuous drive here; flag if a pause between them mattered
 
-enum LiftRLPrepState { LIFT_RL_PREP_IDLE, LIFT_RL_PREP_HIP_FL_STAGE, LIFT_RL_PREP_KNEE_RL_STAGE, LIFT_RL_PREP_HIP_RL_STAGE };
+enum LiftRLPrepState {
+  LIFT_RL_PREP_IDLE,
+  LIFT_RL_PREP_HIP_FL_STAGE,
+  LIFT_RL_PREP_KNEE_FL_STAGE,
+  LIFT_RL_PREP_KNEE_RL_RETRACT_STAGE,
+  LIFT_RL_PREP_KNEE_RL_EXTEND_STAGE,
+  LIFT_RL_PREP_KNEE_RL_SETTLE_STAGE,
+  LIFT_RL_PREP_DRIVE_STAGE
+};
 LiftRLPrepState liftRLPrepState = LIFT_RL_PREP_IDLE;
 
 bool startLiftRLPrep() {
@@ -3956,21 +3978,42 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_HIP_FL_STAGE) {
     if (!legMoveDone(FL)) return; // still moving hip_fl
-    setKnee(RL, LIFT_RL_PREP_KNEE_RL);
-    liftRLPrepState = LIFT_RL_PREP_KNEE_RL_STAGE;
+    setKnee(FL, LIFT_RL_PREP_KNEE_FL);
+    liftRLPrepState = LIFT_RL_PREP_KNEE_FL_STAGE;
     return;
   }
 
-  if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_STAGE) {
-    if (!legMoveDone(RL)) return; // still moving knee_rl
-    setHip(RL, LIFT_RL_PREP_HIP_RL);
-    liftRLPrepState = LIFT_RL_PREP_HIP_RL_STAGE;
+  if (liftRLPrepState == LIFT_RL_PREP_KNEE_FL_STAGE) {
+    if (!legMoveDone(FL)) return; // still moving knee_fl
+    setKnee(RL, LIFT_RL_PREP_KNEE_RL_1);
+    liftRLPrepState = LIFT_RL_PREP_KNEE_RL_RETRACT_STAGE;
     return;
   }
 
-  if (liftRLPrepState == LIFT_RL_PREP_HIP_RL_STAGE) {
-    if (!legMoveDone(RL)) return; // still moving hip_rl
-    Serial.println(F("lift_rl prep complete."));
+  if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_RETRACT_STAGE) {
+    if (!legMoveDone(RL)) return; // still retracting knee_rl
+    setKnee(RL, LIFT_RL_PREP_KNEE_RL_2);
+    liftRLPrepState = LIFT_RL_PREP_KNEE_RL_EXTEND_STAGE;
+    return;
+  }
+
+  if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_EXTEND_STAGE) {
+    if (!legMoveDone(RL)) return; // still swinging knee_rl out onto the step
+    setKnee(RL, LIFT_RL_PREP_KNEE_RL_3);
+    liftRLPrepState = LIFT_RL_PREP_KNEE_RL_SETTLE_STAGE;
+    return;
+  }
+
+  if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_SETTLE_STAGE) {
+    if (!legMoveDone(RL)) return; // still settling knee_rl onto the step
+    startDrive(LIFT_RL_PREP_DRIVE_SPEED, LIFT_RL_PREP_DRIVE_MS);
+    liftRLPrepState = LIFT_RL_PREP_DRIVE_STAGE;
+    return;
+  }
+
+  if (liftRLPrepState == LIFT_RL_PREP_DRIVE_STAGE) {
+    if (driveActive) return; // still driving forward
+    Serial.println(F("lift_rl prep complete -- RL should now be on the step."));
     moveSpeedScale = 1.0;
     liftRLPrepState = LIFT_RL_PREP_IDLE;
   }

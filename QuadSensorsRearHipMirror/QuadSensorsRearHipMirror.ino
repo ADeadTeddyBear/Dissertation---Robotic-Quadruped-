@@ -2109,7 +2109,19 @@ const ClimbPose REAR_RR_PREP = { 140, 140, 120,  80, 30, 235, 50, 160 }; // weig
 // to deliberately let the body's centre of mass lurch forward, rather
 // than trying to keep the body perfectly controlled/balanced through
 // the whole rear lift the way the older approach did.
+//
+// Split into two explicit stages by request, rather than one combined
+// jump straight to RL's already-extended target: REAR_LEGS_SHARED_START
+// gets RL and RR to the SAME shared pose together first (both at RR's
+// stance value, 50/140) -- wait for "Climb pose reached." (which only
+// prints once ALL FOUR legs, including FL/FR, have finished settling)
+// before doing anything else. Only THEN, as a separate deliberate
+// step, does RL alone extend its knee toward 270 to start the lurch
+// -- use knee_rl 270 directly (a single-joint jog is all this needs,
+// no new command required). REAR_KNEE_LURCH_START itself (the old
+// one-shot combined pose) is left in place, not removed.
 // ============================================================
+const ClimbPose REAR_LEGS_SHARED_START = { 65, 0, 65, 0, 50, 140, 50, 140 }; // both front legs up on the step; RL and RR at the SAME shared pose, not yet diverging
 const ClimbPose REAR_KNEE_LURCH_START = { 65, 0, 65, 0, 50, 270, 50, 140 }; // both front legs up on the step, confirmed stable, ready to extend RL's knee
 
 bool climbMoveActive = false;
@@ -3133,6 +3145,10 @@ void handleCommand(String input) {
     commandClimbPose(REAR_RR_PREP);
     Serial.println(F("Commanding REAR_RR_PREP -- UNTESTED via this automated path, watch closely."));
 
+  } else if (input == "rear_legs_shared_start") {
+    commandClimbPose(REAR_LEGS_SHARED_START);
+    Serial.println(F("Commanding REAR_LEGS_SHARED_START -- RL and RR moving to the same shared pose together. Wait for 'Climb pose reached.' (all four legs settled) before sending knee_rl 270 to start the lurch."));
+
   } else if (input == "rear_knee_lurch_start") {
     commandClimbPose(REAR_KNEE_LURCH_START);
     Serial.println(F("Commanding REAR_KNEE_LURCH_START -- both front legs up on the step, ready for the RL knee-lurch technique. UNTESTED via this automated path, watch closely."));
@@ -3159,7 +3175,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | rear_knee_lurch_start | new_stable_lift | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | all <angle> | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | foot_fl/fr/rl/rr <x_mm> <y_mm> | angles | stand | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | step_fl/fr/rl/rr <forward_mm> <step_height_mm> | step_scan_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_rl_lift | rear_rl_place | rear_rr_prep | rear_legs_shared_start | rear_knee_lurch_start | new_stable_lift | climb_low/mid/tall_prep | climb_low/mid/tall_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | square | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {

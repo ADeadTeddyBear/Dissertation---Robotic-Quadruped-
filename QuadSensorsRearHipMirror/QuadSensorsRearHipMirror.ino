@@ -4031,7 +4031,7 @@ void updateRearPrep() {
 #define LIFT_RL_PREP_KNEE_RL_2     250
 #define LIFT_RL_PREP_HIP_RL_2      40
 #define LIFT_RL_PREP_DRIVE2_SPEED  100
-#define LIFT_RL_PREP_DRIVE2_MS     500 // second walk-up pulse, climbing the step face
+#define LIFT_RL_PREP_DRIVE2_MS     5500 // second walk-up pulse, climbing the step face -- increased by 5000ms by request, needed to drive much further forwards
 #define LIFT_RL_PREP_KNEE_RL_3     260
 #define LIFT_RL_PREP_HIP_RL_3      70
 #define LIFT_RL_PREP_HIP_FL_MATCH  110 // FL brought up to match FR by the end, confirmed on hardware

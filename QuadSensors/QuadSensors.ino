@@ -4006,6 +4006,7 @@ bool startLiftRLPrep() {
   if (liftRLPrepState != LIFT_RL_PREP_IDLE) return false;
   if (liftState != LIFT_HOLDING) return false; // expects to run after rear_prep, once a leg is already holding on the step
   moveSpeedScale = LIFT_MOVE_SPEED_SCALE; // careful, slow motion -- matches the rest of the climb sequence
+  Serial.print(F("lift_rl: tipping hip_fr -> ")); Serial.println(LIFT_RL_PREP_HIP_FR_TIP);
   setHip(FR, LIFT_RL_PREP_HIP_FR_TIP);
   liftRLPrepState = LIFT_RL_PREP_TIP_FR_STAGE;
   return true;
@@ -4016,6 +4017,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_TIP_FR_STAGE) {
     if (!legMoveDone(FR)) return; // still tipping weight onto FR
+    Serial.print(F("lift_rl: lifting/clearing knee_rl -> ")); Serial.println(LIFT_RL_PREP_KNEE_RL_1);
     setKnee(RL, LIFT_RL_PREP_KNEE_RL_1);
     liftRLPrepState = LIFT_RL_PREP_KNEE_RL_LIFT_STAGE;
     return;
@@ -4023,6 +4025,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_LIFT_STAGE) {
     if (!legMoveDone(RL)) return; // still lifting/clearing knee_rl
+    Serial.print(F("lift_rl: swinging hip_rl -> ")); Serial.println(LIFT_RL_PREP_HIP_RL_1);
     setHip(RL, LIFT_RL_PREP_HIP_RL_1);
     liftRLPrepState = LIFT_RL_PREP_HIP_RL_SWING_STAGE;
     return;
@@ -4030,6 +4033,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_HIP_RL_SWING_STAGE) {
     if (!legMoveDone(RL)) return; // still swinging hip_rl under
+    Serial.println(F("lift_rl: driving forward -- first walk-up pulse"));
     startDrive(LIFT_RL_PREP_DRIVE1_SPEED, LIFT_RL_PREP_DRIVE1_MS);
     liftRLPrepState = LIFT_RL_PREP_DRIVE1_STAGE;
     return;
@@ -4037,6 +4041,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_DRIVE1_STAGE) {
     if (driveActive) return; // still driving -- first walk-up pulse
+    Serial.print(F("lift_rl: knee_rl -> ")); Serial.println(LIFT_RL_PREP_KNEE_RL_2);
     setKnee(RL, LIFT_RL_PREP_KNEE_RL_2);
     liftRLPrepState = LIFT_RL_PREP_KNEE_RL_MID_STAGE;
     return;
@@ -4044,6 +4049,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_MID_STAGE) {
     if (!legMoveDone(RL)) return; // still moving knee_rl
+    Serial.print(F("lift_rl: hip_rl -> ")); Serial.println(LIFT_RL_PREP_HIP_RL_2);
     setHip(RL, LIFT_RL_PREP_HIP_RL_2);
     liftRLPrepState = LIFT_RL_PREP_HIP_RL_MID_STAGE;
     return;
@@ -4051,6 +4057,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_HIP_RL_MID_STAGE) {
     if (!legMoveDone(RL)) return; // still moving hip_rl
+    Serial.println(F("lift_rl: driving forward -- second walk-up pulse"));
     startDrive(LIFT_RL_PREP_DRIVE2_SPEED, LIFT_RL_PREP_DRIVE2_MS);
     liftRLPrepState = LIFT_RL_PREP_DRIVE2_STAGE;
     return;
@@ -4058,6 +4065,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_DRIVE2_STAGE) {
     if (driveActive) return; // still driving -- second walk-up pulse
+    Serial.print(F("lift_rl: knee_rl -> ")); Serial.println(LIFT_RL_PREP_KNEE_RL_3);
     setKnee(RL, LIFT_RL_PREP_KNEE_RL_3);
     liftRLPrepState = LIFT_RL_PREP_KNEE_RL_FINAL_STAGE;
     return;
@@ -4065,6 +4073,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_KNEE_RL_FINAL_STAGE) {
     if (!legMoveDone(RL)) return; // still moving knee_rl
+    Serial.print(F("lift_rl: hip_rl -> ")); Serial.println(LIFT_RL_PREP_HIP_RL_3);
     setHip(RL, LIFT_RL_PREP_HIP_RL_3);
     liftRLPrepState = LIFT_RL_PREP_HIP_RL_FINAL_STAGE;
     return;
@@ -4072,6 +4081,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_HIP_RL_FINAL_STAGE) {
     if (!legMoveDone(RL)) return; // still moving hip_rl
+    Serial.print(F("lift_rl: hip_fl -> ")); Serial.print(LIFT_RL_PREP_HIP_FL_MATCH); Serial.println(F(" (matching hip_fr)"));
     setHip(FL, LIFT_RL_PREP_HIP_FL_MATCH);
     liftRLPrepState = LIFT_RL_PREP_HIP_FL_MATCH_STAGE;
     return;
@@ -4079,6 +4089,7 @@ void updateLiftRLPrep() {
 
   if (liftRLPrepState == LIFT_RL_PREP_HIP_FL_MATCH_STAGE) {
     if (!legMoveDone(FL)) return; // still bringing hip_fl up to match FR
+    Serial.println(F("lift_rl: driving forward -- final seat pulse"));
     startDrive(LIFT_RL_PREP_DRIVE3_SPEED, LIFT_RL_PREP_DRIVE3_MS);
     liftRLPrepState = LIFT_RL_PREP_DRIVE3_STAGE;
     return;

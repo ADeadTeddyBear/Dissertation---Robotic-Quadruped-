@@ -3098,6 +3098,21 @@ void checkLevel() {
   }
 }
 
+// Bare pitch/roll printout, on demand -- no level/not-level verdict, just
+// the raw numbers, for watching roll live while hand-jogging a weight
+// shift (e.g. tipping toward a front corner to unload the diagonally
+// opposite rear leg). A failed read prints a message rather than stale
+// or garbage numbers -- see readMPU6050()'s comment for why reads fail.
+void printPitchRoll() {
+  float pitch, roll;
+  if (!readMPU6050(pitch, roll)) { // bad read -- see readMPU6050()'s comment
+    Serial.println(F("IMU read failed -- try again."));
+    return;
+  }
+  Serial.print(F("Pitch:")); Serial.print(pitch, 1);
+  Serial.print(F("  Roll:")); Serial.println(roll, 1);
+}
+
 // ============================================================
 // VL53L0X SETUP — sensor 2 booted first to avoid address clash
 // ============================================================
@@ -3282,6 +3297,9 @@ void handleCommand(String input) {
   } else if (input == "level") {
     checkLevel();
 
+  } else if (input == "pitch_roll") {
+    printPitchRoll();
+
   } else if (input == "balance on") {
     balanceEnabled = true;
     Serial.println(F("Self-balancing enabled."));
@@ -3294,7 +3312,7 @@ void handleCommand(String input) {
 
   } else if (input == "help") {
     Serial.println();
-    Serial.println(F("Commands: start | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | angles | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_prep | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_legs_shared_start | new_stable_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | turn_test <speed -255..255> <duration_ms> | level | balance on/off | sensors | help"));
+    Serial.println(F("Commands: start | hip_fl/fr/rl/rr <angle> | knee_fl/fr/rl/rr <angle> | angles | stand <percent> | stand_sweep | lift_fl/fr/rl/rr | second_fr | raise_rear | raise_rear_stop | rear_prep | rear_wheel_lift_rl/rr | rear_wheel_lower | rear_wheel_stop | rear_legs_shared_start | new_stable_lift | lower | drive <speed -255..255> <duration_ms> | drive_to <speed> <target_mm> <timeout_ms> | drive_stop | turn_test <speed -255..255> <duration_ms> | level | pitch_roll | balance on/off | sensors | help"));
     Serial.println();
 
   } else if (input == "stand_sweep") {

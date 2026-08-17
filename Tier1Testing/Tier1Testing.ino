@@ -287,7 +287,16 @@ void printMeanStd(const char *label, float *vals, int n) {
 #define FINE_STEP_FRACTION 0.01   // 1% per step -- same as QuadSensorsRearHipMirror.ino
 #define FINE_STEP_INTERVAL_MS 100 // matches the ToF's own ~100ms continuous-ranging cycle
 #define STEP_CHANGE_THRESHOLD_MM 150 // same as QuadSensorsRearHipMirror.ino
-#define TEST1_DELTA_CAL_MM 0.0    // extra calibration offset, tune once real vs. estimated bias is known
+// Derived from ONE hardware calibration point: a 195mm step (physically
+// confirmed accurate to 2mm at the actual stopping pose) printed a raw
+// estimate of 237.017mm before this offset -- 197 - 237.017 ~= -40.0.
+// Crossing detection itself is confirmed correct (chassis height at the
+// stop matched the real step within 2mm); the error is entirely in
+// heightAtStandProgress()'s %-to-mm conversion at that stand-percentage.
+// This offset is ONLY validated at ~195mm so far -- re-check it against
+// a different known height before trusting it broadly; if the gap isn't
+// constant across heights, a flat offset won't be the real fix.
+#define TEST1_DELTA_CAL_MM -40.0
 #define TEST1_BLOCKS 3
 #define TEST1_SWEEPS_PER_BLOCK 5
 

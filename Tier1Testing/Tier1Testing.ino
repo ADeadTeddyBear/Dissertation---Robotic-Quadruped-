@@ -6,45 +6,49 @@
 // IMU calibration) -- this sketch only touches the legs and the two
 // ToF sensors, nothing else.
 //
-// All pin numbers, trims, joint limits, and IK formulas below are
-// copied directly from QuadSensors.ino (not re-guessed), so results
-// here reflect the real robot's real geometry:
+// All pin numbers, trims, joint limits, and the sweep/detection
+// algorithm below are copied directly from
+// QuadSensorsRearHipMirror.ino (not re-guessed or re-derived):
 //   - Hip/knee pins, HIP_TRIM, HIP_MIN/MAX, KNEE_MIN/MAX, HIP_START/
-//     KNEE_START, HIP_MIRROR/KNEE_MIRROR: QuadSensors.ino's SERVO
-//     CONFIG / KNEE CONFIG sections.
-//   - LEG_THIGH_MM/LEG_CALF_MM, frontAmountForHeight()/
-//     rearAmountForHeight()/computeFrontJointsForHeight()/
-//     computeRearJointsForHeight(): QuadSensors.ino's LEG INVERSE
-//     KINEMATICS section -- the same "accurate" height-command math
-//     that used to back the "height <mm>" command (setBodyHeight()).
+//     KNEE_START, HIP_MIRROR/KNEE_MIRROR: its SERVO CONFIG / KNEE
+//     CONFIG sections.
+//   - CROUCH_LOW_HIP/KNEE, heightAtStandProgress(),
+//     footXAtStandProgress(), applyStandProgress(),
+//     FINE_STEP_FRACTION/FINE_STEP_INTERVAL_MS/STEP_CHANGE_THRESHOLD_MM,
+//     TOF1_HEIGHT_ABOVE_HIP_MM/TOF1_FORWARD_OFFSET_MM/
+//     TOF1_HEIGHT_REF_LEG, and the scan-with-self-motion-compensation
+//     crossing detection: its STAND SEQUENCE and STAND SWEEP sections
+//     -- this IS the "stand_sweep" command, ported as-is, not a new
+//     height-sweep invented for this test.
 //   - setupVL53L0X()'s XSHUT sequencing (sensor 2 booted first) and
-//     tuning: QuadSensors.ino's VL53L0X SETUP section.
+//     tuning: its VL53L0X SETUP section.
 //
 // IMPORTANT -- what changed from the original test spec, and why:
 //   There is NO downward-facing ToF sensor on this robot. Both ToF1
 //   (0x29) and ToF2 (0x52, via XSHUT_2) are mounted level and
 //   forward-facing, side by side (ToF1 left-of-centre, ToF2 right-
-//   of-centre) -- confirmed by QuadSensors.ino's own square-up
+//   of-centre) -- confirmed by the source file's own square-up
 //   comments. So this test cannot use a fixed
 //   "H_step = h_s - d_step*sin(45deg)" formula; that sensor doesn't
 //   exist. Both sensors are still booted (XSHUT sequencing needs both
 //   to avoid an I2C address clash), but only ToF1 is actually read.
 //
-//   Instead, this reimplements the REAL method QuadSensors.ino uses
-//   for step height (see its "ToF1 -> step geometry" comment): sweep
-//   commanded body height up via IK (computeFrontJointsForHeight()/
-//   computeRearJointsForHeight(), the same math as the old accurate
-//   "height <mm>" command) while ToF1's level, forward-aimed beam
-//   stays fixed on the step's front face; the moment the sensor's
-//   rising HEIGHT clears the step's top edge, ToF1's reading jumps
-//   (reused threshold: 150mm, same as QuadSensors.ino's
-//   STEP_CHANGE_THRESHOLD_MM). Estimated step height = the body
-//   height at that crossover + TOF1_HEIGHT_ABOVE_HIP_MM (same
-//   constant QuadSensors.ino uses) + a calibration offset.
+//   An earlier version of this sketch used setBodyHeight()'s per-height
+//   IK formulas (computeFrontJointsForHeight()/
+//   computeRearJointsForHeight()) to sweep in raw mm steps. Replaced
+//   by request with the REAL stand_sweep mechanism instead -- the
+//   source file's own comments note the IK-height-target command
+//   ("height <mm>") was actually retired in favour of this
+//   angle-interpolation approach because the IK formulas "could reject
+//   or misbehave" -- stand_sweep is the one QuadSensorsRearHipMirror.ino
+//   still actually uses for step-height estimation today.
 //
-// Servos are written directly (writeMicroseconds), not through
-// QuadSensors.ino's eased-motion system -- movements snap instead of
-// easing; explicit settle delays are used instead.
+// Servos are written directly (writeMicroseconds), not through the
+// source file's eased-motion system -- movements snap instead of
+// easing; explicit settle delays are used instead. There is no
+// auto-step-placement here (that's the climb sequence, out of scope
+// for this measurement-only test) -- this stops at reporting the
+// estimated height.
 // ============================================================
 
 #include <Wire.h>
@@ -52,7 +56,7 @@
 #include <VL53L0X.h>
 
 // ------------------------------------------------------------
-// SERVO CONFIG -- copied from QuadSensors.ino
+// SERVO CONFIG -- copied from QuadSensorsRearHipMirror.ino
 // ------------------------------------------------------------
 enum { FL = 0, FR, RL, RR, NUM_HIPS };
 
@@ -95,71 +99,17 @@ void writeKnee(int i, int angle) {
 }
 
 // ------------------------------------------------------------
-// LEG INVERSE KINEMATICS -- copied from QuadSensors.ino
+// LEG GEOMETRY -- copied from QuadSensorsRearHipMirror.ino
 // ------------------------------------------------------------
 const float LEG_THIGH_MM = 165.0;
 const float LEG_CALF_MM  = 195.0;
 
-float frontAmountForHeight(float heightMM) {
-  float c = (heightMM - LEG_CALF_MM) / LEG_THIGH_MM;
-  c = constrain(c, -1.0, 1.0);
-  return degrees(acos(c));
-}
-
-float rearAmountForHeight(float heightMM) {
-  float A = 2.0 * LEG_CALF_MM;
-  float B = LEG_THIGH_MM;
-  float C = -(LEG_CALF_MM + heightMM);
-  float disc = B * B - 4.0 * A * C;
-  if (disc < 0) disc = 0;
-  float u = (-B + sqrt(disc)) / (2.0 * A);
-  u = constrain(u, -1.0, 1.0);
-  return degrees(acos(u));
-}
-
-bool computeFrontJointsForHeight(int i, float heightMM, int &hipOut, int &kneeOut) {
-  float aFront = frontAmountForHeight(heightMM);
-  int hip  = (int)round(HIP_START[i] + aFront);
-  int knee = (int)round(KNEE_START[i] - aFront);
-  if (hip < HIP_MIN[i] || hip > HIP_MAX[i] || knee < KNEE_MIN[i] || knee > KNEE_MAX[i]) return false;
-  hipOut = hip;
-  kneeOut = knee;
-  return true;
-}
-
-bool computeRearJointsForHeight(int i, float heightMM, int &hipOut, int &kneeOut) {
-  float bRear = rearAmountForHeight(heightMM);
-  int hip  = (int)round(HIP_START[i] - bRear);
-  int knee = (int)round(KNEE_START[i] - bRear);
-  if (hip < HIP_MIN[i] || hip > HIP_MAX[i] || knee < KNEE_MIN[i] || knee > KNEE_MAX[i]) return false;
-  hipOut = hip;
-  kneeOut = knee;
-  return true;
-}
-
-// Same role as QuadSensors.ino's setBodyHeight() -- the "accurate"
-// IK-based height command -- but writes directly (no easing) since
-// this is a standalone test sketch.
-bool commandBodyHeight(float heightMM) {
-  int hipFL, kneeFL, hipFR, kneeFR, hipRL, kneeRL, hipRR, kneeRR;
-  bool ok = computeFrontJointsForHeight(FL, heightMM, hipFL, kneeFL) &&
-            computeFrontJointsForHeight(FR, heightMM, hipFR, kneeFR) &&
-            computeRearJointsForHeight(RL, heightMM, hipRL, kneeRL) &&
-            computeRearJointsForHeight(RR, heightMM, hipRR, kneeRR);
-  if (!ok) return false;
-  writeHip(FL, hipFL);   writeKnee(FL, kneeFL);
-  writeHip(FR, hipFR);   writeKnee(FR, kneeFR);
-  writeHip(RL, hipRL);   writeKnee(RL, kneeRL);
-  writeHip(RR, hipRR);   writeKnee(RR, kneeRR);
-  return true;
-}
-
 // ------------------------------------------------------------
-// VL53L0X -- copied from QuadSensors.ino (sensor 2 booted first via
-// XSHUT to avoid an address clash, both tuned the same "long range"
-// way). Only tof1 is actually read by this test; tof2 is still booted
-// because the XSHUT sequencing needs both sensors present to assign
-// addresses correctly.
+// VL53L0X -- copied from QuadSensorsRearHipMirror.ino (sensor 2
+// booted first via XSHUT to avoid an address clash, both tuned the
+// same "long range" way). Only tof1 is actually read by this test;
+// tof2 is still booted because the XSHUT sequencing needs both
+// sensors present to assign addresses correctly.
 // ------------------------------------------------------------
 #define XSHUT_1   A0
 #define XSHUT_2   A1
@@ -225,6 +175,58 @@ void readTof1() {
   tof1_ok = !tof1.timeoutOccurred() && tof1_mm > 0 && tof1_mm <= TOF_MAX_MM;
 }
 
+// ============================================================
+// STAND SEQUENCE (confirmed-low crouch <-> full standing) -- copied
+// from QuadSensorsRearHipMirror.ino. standProgress (0 = CROUCH_LOW,
+// 1 = full standing at HIP_START/KNEE_START) blends every joint
+// through the same single fraction, via plain per-joint linear
+// interpolation between confirmed endpoints. Written directly here
+// (no easing/gradual standStep() pacing) since this sketch snaps
+// servos, matching the rest of this file's simplified style.
+// ============================================================
+const int CROUCH_LOW_HIP[NUM_HIPS]  = { 140, 140, 140, 140 }; // FL, FR, RL, RR -- confirmed by hand
+const int CROUCH_LOW_KNEE[NUM_HIPS] = {  30,  20, 240, 250 }; // FL, FR, RL, RR -- confirmed by hand
+
+#define TOF1_HEIGHT_ABOVE_HIP_MM 5.0    // measured: "a few mm" above the hip-pivot line
+#define TOF1_FORWARD_OFFSET_MM   -58.0  // measured with calipers: 58mm BEHIND the front hip pivots
+#define TOF1_HEIGHT_REF_LEG      FL     // any leg works (all move identically during the sweep); front leg chosen since ToF1 sits at the front
+
+float standProgress = 0.0; // 0 = CROUCH_LOW stance, 1 = full standing
+
+// Real hip-to-ground height (mm) leg i would have at a given
+// standProgress, using the exact CROUCH_LOW<->HIP_START/KNEE_START
+// angle interpolation applyStandProgress() itself commands.
+float heightAtStandProgress(int i, float progress) {
+  float hip  = CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress;
+  float knee = CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress;
+  float theta1 = radians(hip - HIP_START[i]);
+  float theta2 = radians(knee - KNEE_START[i]);
+  return LEG_THIGH_MM * cos(theta1) + LEG_CALF_MM * cos(theta1 + theta2);
+}
+
+// Same interpolation, but the x (forward) component -- leg i's foot
+// position relative to its own hip, fore-aft, at a given standProgress.
+// Used to compensate the raw ToF1 reading for the chassis's own
+// forward/backward shift as the sweep changes body height.
+float footXAtStandProgress(int i, float progress) {
+  float hip  = CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress;
+  float knee = CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress;
+  float theta1 = radians(hip - HIP_START[i]);
+  float theta2 = radians(knee - KNEE_START[i]);
+  return LEG_THIGH_MM * sin(theta1) + LEG_CALF_MM * sin(theta1 + theta2);
+}
+
+void applyStandProgress(float progress) {
+  progress = constrain(progress, 0.0, 1.0);
+  standProgress = progress;
+  for (int i = 0; i < NUM_HIPS; i++) {
+    int hip  = (int)round(CROUCH_LOW_HIP[i]  + (HIP_START[i]  - CROUCH_LOW_HIP[i])  * progress);
+    int knee = (int)round(CROUCH_LOW_KNEE[i] + (KNEE_START[i] - CROUCH_LOW_KNEE[i]) * progress);
+    writeHip(i, hip);
+    writeKnee(i, knee);
+  }
+}
+
 // ------------------------------------------------------------
 // SERIAL HELPERS
 // ------------------------------------------------------------
@@ -270,50 +272,67 @@ void printMeanStd(const char *label, float *vals, int n) {
 // ============================================================
 // TEST 1 -- step height estimation accuracy
 //
-// TEST1_HEIGHT_MIN_MM/MAX_MM/STEP_MM/SETTLE_MS below are new sweep
-// parameters chosen for this test (not copied from QuadSensors.ino,
-// which paces its own sweep by stand-progress fraction, not raw mm)
-// -- adjust if the sweep is too coarse/slow on real hardware.
-// TOF1_HEIGHT_ABOVE_HIP_MM and the 150mm jump threshold ARE copied
-// from QuadSensors.ino directly.
+// This is stand_sweep, ported as-is from QuadSensorsRearHipMirror.ino:
+// step standProgress up in FINE_STEP_FRACTION (1%) increments, no
+// pause between steps beyond FINE_STEP_INTERVAL_MS (matches ToF1's
+// own ~100ms continuous-ranging cycle), comparing each self-motion-
+// compensated reading against the scan's 0%-baseline. A crossing
+// (cumulative drift >= STEP_CHANGE_THRESHOLD_MM, or the target
+// disappearing entirely) means ToF1's rising height has cleared the
+// step's top edge -- estimated height = heightAtStandProgress() at
+// that point + TOF1_HEIGHT_ABOVE_HIP_MM, exactly as the source file
+// computes it. TEST1_DELTA_CAL_MM is an extra calibration offset on
+// top of that, not part of the original algorithm -- defaults to 0.
 // ============================================================
-#define TEST1_HEIGHT_MIN_MM   150.0
-#define TEST1_HEIGHT_MAX_MM   340.0
-#define TEST1_HEIGHT_STEP_MM  5.0
-#define TEST1_SETTLE_MS       300
-#define TEST1_JUMP_THRESHOLD_MM 150 // same as QuadSensors.ino's STEP_CHANGE_THRESHOLD_MM
-#define TOF1_HEIGHT_ABOVE_HIP_MM 5.0 // same constant QuadSensors.ino uses
-#define TEST1_DELTA_CAL_MM    0.0   // calibration offset, tune once real vs. estimated bias is known
-#define TEST1_BLOCKS          3
+#define FINE_STEP_FRACTION 0.01   // 1% per step -- same as QuadSensorsRearHipMirror.ino
+#define FINE_STEP_INTERVAL_MS 100 // matches the ToF's own ~100ms continuous-ranging cycle
+#define STEP_CHANGE_THRESHOLD_MM 150 // same as QuadSensorsRearHipMirror.ino
+#define TEST1_DELTA_CAL_MM 0.0    // extra calibration offset, tune once real vs. estimated bias is known
+#define TEST1_BLOCKS 3
 #define TEST1_SWEEPS_PER_BLOCK 5
 
-// Returns the estimated step height in mm, or NAN if no crossover was found.
+// Returns the estimated step height in mm, or NAN if no crossing was
+// found across the full 0-100% sweep. Mirrors updateStepScan()'s
+// per-step logic, just run to completion in one blocking call instead
+// of being paced across loop() ticks.
 float sweepForStepHeight() {
-  bool haveBaseline = false;
-  uint16_t baseline = 0;
+  applyStandProgress(0.0);
+  delay(500); // let the crouch settle before taking the baseline reading
 
-  for (float h = TEST1_HEIGHT_MIN_MM; h <= TEST1_HEIGHT_MAX_MM; h += TEST1_HEIGHT_STEP_MM) {
-    if (!commandBodyHeight(h)) continue; // unreachable at this height for at least one leg -- skip
-    delay(TEST1_SETTLE_MS);
+  readTof1();
+  uint16_t baseline = tof1_mm;
+  bool baselineOk = tof1_ok;
+
+  while (standProgress < 1.0) {
+    applyStandProgress(standProgress + FINE_STEP_FRACTION);
+    delay(FINE_STEP_INTERVAL_MS);
     readTof1();
-    if (!tof1_ok) continue;
 
-    Serial.print(F("TEST1_RAW,")); Serial.print(h, 1); Serial.print(F(",")); Serial.println(tof1_mm);
+    float chassisShiftMM = footXAtStandProgress(TOF1_HEIGHT_REF_LEG, 0.0)
+                          - footXAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress);
+    float compensatedToF1 = (float)tof1_mm + chassisShiftMM;
 
-    if (!haveBaseline) {
-      baseline = tof1_mm;
-      haveBaseline = true;
-      continue;
+    Serial.print(F("TEST1_RAW,")); Serial.print((int)round(standProgress * 100));
+    Serial.print(F(",")); Serial.print(tof1_ok ? (long)tof1_mm : -1);
+    Serial.print(F(",")); Serial.println(compensatedToF1, 1);
+
+    bool crossed = false;
+    if (baselineOk) {
+      if (!tof1_ok) {
+        crossed = true; // target disappeared entirely -- cleared it with nothing behind
+      } else if (compensatedToF1 >= (float)baseline + STEP_CHANGE_THRESHOLD_MM) {
+        crossed = true;
+      }
     }
-    if ((int)tof1_mm - (int)baseline > TEST1_JUMP_THRESHOLD_MM) {
-      return h + TOF1_HEIGHT_ABOVE_HIP_MM + TEST1_DELTA_CAL_MM;
+    if (crossed) {
+      return heightAtStandProgress(TOF1_HEIGHT_REF_LEG, standProgress) + TOF1_HEIGHT_ABOVE_HIP_MM + TEST1_DELTA_CAL_MM;
     }
   }
   return NAN;
 }
 
 void runTest1() {
-  Serial.println(F("=== TEST 1: step height estimation accuracy ==="));
+  Serial.println(F("=== TEST 1: step height estimation accuracy (stand_sweep) ==="));
   for (int block = 0; block < TEST1_BLOCKS; block++) {
     Serial.print(F("Block ")); Serial.print(block + 1); Serial.print(F(" of ")); Serial.println(TEST1_BLOCKS);
     float actualHeight = promptForFloat(F("Set up the obstacle, then enter its actual height in mm:"));
@@ -333,8 +352,6 @@ void runTest1() {
         estimates[validCount] = est;
         validCount++;
       }
-      commandBodyHeight(TEST1_HEIGHT_MIN_MM); // reset low before the next sweep
-      delay(TEST1_SETTLE_MS);
     }
 
     char label[32];
@@ -352,23 +369,20 @@ void runTest1() {
 // SETUP / LOOP
 // ============================================================
 void setup() {
-  Serial.begin(115200); // NOTE: QuadSensors.ino runs at 57600 because 115200 was confirmed to drop/stall on this exact hardware -- watch for garbled output and drop to 57600 if it happens here too
+  Serial.begin(115200); // NOTE: QuadSensorsRearHipMirror.ino runs at 57600 because 115200 was confirmed to drop/stall on this exact hardware -- watch for garbled output and drop to 57600 if it happens here too
   while (!Serial) { /* wait for native USB, harmless no-op on the Mega 2560's hardware UART */ }
 
   Wire.begin();
-  Wire.setWireTimeout(25000, true); // same as QuadSensors.ino -- protects against I2C bus hangs from servo/motor electrical noise
+  Wire.setWireTimeout(25000, true); // same as the source file -- protects against I2C bus hangs from servo/motor electrical noise
 
   for (int i = 0; i < NUM_HIPS; i++) {
     hipServos[i].attach(HIP_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
     kneeServos[i].attach(KNEE_PINS[i], SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US);
   }
-  // Boot to the known-safe reference pose (leg straight down) rather
-  // than snapping straight into the sweep -- avoids slamming into a
-  // mechanical limit before anything has been verified.
-  for (int i = 0; i < NUM_HIPS; i++) {
-    writeHip(i, HIP_START[i]);
-    writeKnee(i, KNEE_START[i]);
-  }
+  // Boot straight to CROUCH_LOW (standProgress 0), same as
+  // QuadSensorsRearHipMirror.ino's enterCrouchLow() -- the
+  // hand-verified safe floor, not a theoretical one.
+  applyStandProgress(0.0);
   delay(1000);
 
   setupVL53L0X();
